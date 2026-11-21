@@ -1,0 +1,3051 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pixel-Art Cinematic Day/Night Toggle — Liquid Glass</title>
+  <meta name="description" content="Interactive Pixel-Art Cinematic Day/Night Theme Toggle with physically inspired WebGL Liquid Glass refraction, 8-channel lighting engine, real-time audio synthesis, and 9:16 video studio." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Prevent flash of incorrect theme before first paint -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('cinematic-toggle-theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var initial = (saved === 'light' || saved === 'dark') ? saved : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', initial);
+        if (initial === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      } catch (e) {
+        // Fallback to light mode if storage is restricted
+      }
+    })();
+  </script>
+
+  <style>
+    /* =========================================================================
+       DESIGN TOKENS & THEME SYSTEM
+       ========================================================================= */
+    :root {
+      --color-background: #EFF0F5;
+      --color-surface: rgba(255, 255, 255, 0.78);
+      --color-surface-solid: #FFFFFF;
+      --color-text: #1B2436;
+      --color-muted: #65728A;
+      --color-border: rgba(27, 36, 54, 0.10);
+      --color-shadow: rgba(25, 38, 66, 0.14);
+      --color-accent: #3B6CE2;
+
+      /* Dynamic metallic capsule tokens (updated smoothly by LightingEngine) */
+      --frame-reflect: 0.85;
+      --night-mix: 0.0;
+      --toggle-width: 440px;
+      --toggle-height: 238px;
+    }
+
+    html[data-theme="dark"] {
+      --color-background: #0C1029;
+      --color-surface: rgba(20, 29, 58, 0.78);
+      --color-surface-solid: #141D3A;
+      --color-text: #E9EEF9;
+      --color-muted: #8C9BBF;
+      --color-border: rgba(155, 180, 235, 0.14);
+      --color-shadow: rgba(2, 5, 18, 0.65);
+      --color-accent: #7EA8FF;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--color-background);
+      color: var(--color-text);
+      transition: background-color 420ms cubic-bezier(0.22, 1, 0.36, 1),
+                  color 360ms cubic-bezier(0.22, 1, 0.36, 1);
+      overflow-x: hidden;
+    }
+
+    /* Subtle atmospheric ambient backdrop behind the toggle */
+    .stage-ambient {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      transition: opacity 500ms ease;
+    }
+
+    .stage-ambient::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(
+        ellipse 60% 50% at 50% 46%,
+        rgba(255, 255, 255, 0.65) 0%,
+        rgba(239, 240, 245, 0) 70%
+      );
+      opacity: calc(1 - var(--night-mix));
+    }
+
+    .stage-ambient::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(
+        ellipse 52% 44% at 50% 48%,
+        rgba(56, 86, 178, 0.22) 0%,
+        rgba(26, 38, 86, 0.08) 45%,
+        rgba(12, 16, 41, 0) 75%
+      );
+      opacity: var(--night-mix);
+    }
+
+    /* =========================================================================
+       METALLIC CAPSULE HOUSING (3D EXTRUDED PHYSICAL BEZEL)
+       ========================================================================= */
+    .toggle-scale-wrapper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: 16px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .cinematic-toggle {
+      position: relative;
+      width: var(--toggle-width);
+      height: var(--toggle-height);
+      max-width: calc(100vw - 32px);
+      aspect-ratio: 440 / 238;
+      height: auto;
+      border-radius: 9999px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      user-select: none;
+      touch-action: none;
+      outline: none;
+      display: block;
+      transform: translateZ(0);
+    }
+
+    .cinematic-toggle[aria-disabled="true"] {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    /* Accessible focus ring */
+    .cinematic-toggle:focus-visible .capsule-outer-bezel {
+      box-shadow:
+        0 0 0 4px var(--color-background),
+        0 0 0 7px var(--color-accent),
+        var(--capsule-shadow);
+    }
+
+    /* Outer broad diffused shadow + subtle night blue-violet ambient glow */
+    .capsule-outer-bezel {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 9999px;
+      padding: 1.9%;
+      --capsule-shadow:
+        0 24px 44px -12px rgba(24, 34, 58, 0.26),
+        0 8px 18px -6px rgba(24, 34, 58, 0.15),
+        0 2px 5px rgba(24, 34, 58, 0.09);
+      background: linear-gradient(
+        180deg,
+        #FFFFFF 0%,
+        #E9EDF4 16%,
+        #CFD6E2 50%,
+        #B5BFCF 78%,
+        #DFE4EE 95%,
+        #F7F9FC 100%
+      );
+      box-shadow:
+        var(--capsule-shadow),
+        inset 0 1.5px 2px rgba(255, 255, 255, 0.96),
+        inset 0 -2px 3px rgba(86, 98, 122, 0.34);
+      transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .cinematic-toggle:active:not([aria-disabled="true"]) .capsule-outer-bezel {
+      transform: scale(0.994);
+    }
+
+    /* Dark-mode metallic overlay layer driven smoothly by --night-mix */
+    .capsule-metal-night-overlay {
+      position: absolute;
+      inset: 0;
+      border-radius: 9999px;
+      pointer-events: none;
+      opacity: var(--night-mix);
+      background: linear-gradient(
+        180deg,
+        #475678 0%,
+        #2A3654 18%,
+        #1B243D 52%,
+        #12192D 80%,
+        #263250 96%,
+        #3A496D 100%
+      );
+      box-shadow:
+        0 30px 60px -10px rgba(2, 5, 18, 0.82),
+        0 12px 26px -4px rgba(5, 10, 30, 0.68),
+        0 0 42px rgba(66, 102, 214, 0.22),
+        inset 0 2px 3px rgba(164, 188, 240, 0.34),
+        inset 0 -3px 5px rgba(4, 8, 22, 0.85);
+    }
+
+    /* Crisp upper-edge specular metallic highlight */
+    .capsule-rim-highlight {
+      position: absolute;
+      inset: 0.5px;
+      border-radius: 9999px;
+      pointer-events: none;
+      border: 1px solid rgba(255, 255, 255, calc(0.88 - var(--night-mix) * 0.56));
+      mask-image: linear-gradient(180deg, rgba(0,0,0,1) 0%, rgba(0,0,0,0.18) 42%, rgba(0,0,0,0.05) 75%, rgba(0,0,0,0.55) 100%);
+      -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,1) 0%, rgba(0,0,0,0.18) 42%, rgba(0,0,0,0.05) 75%, rgba(0,0,0,0.55) 100%);
+    }
+
+    /* Inner recessed bevel step */
+    .capsule-inner-bevel {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 9999px;
+      padding: 0.75%;
+      background: linear-gradient(
+        180deg,
+        #9EA9BC 0%,
+        #C5CDDB 45%,
+        #EEF1F7 100%
+      );
+      box-shadow:
+        inset 0 2.5px 6px rgba(24, 34, 56, 0.36),
+        inset 0 -1.5px 3px rgba(255, 255, 255, 0.75);
+      z-index: 2;
+    }
+
+    .capsule-inner-bevel-night {
+      position: absolute;
+      inset: 0;
+      border-radius: 9999px;
+      pointer-events: none;
+      opacity: var(--night-mix);
+      background: linear-gradient(
+        180deg,
+        #0C1224 0%,
+        #192440 48%,
+        #2D3C61 100%
+      );
+      box-shadow:
+        inset 0 5px 12px rgba(2, 5, 16, 0.85),
+        inset 0 -2px 4px rgba(124, 152, 224, 0.22);
+    }
+
+    /* Inner recessed viewing cavity (clips miniature world & liquid-glass lens) */
+    .capsule-cavity {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 9999px;
+      overflow: hidden;
+      background-color: #1A2746;
+      transform: translateZ(0);
+      -webkit-mask-image: -webkit-radial-gradient(white, black);
+      z-index: 3;
+    }
+
+    /* Main WebGL / Canvas2D render surface inside cavity */
+    .scene-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 9999px;
+    }
+
+    /* Recessed ceiling & ambient occlusion inner shadow over the miniature diorama */
+    .cavity-depth-shadow {
+      position: absolute;
+      inset: 0;
+      border-radius: 9999px;
+      pointer-events: none;
+      box-shadow:
+        inset 0 7px 12px -5px rgba(12, 20, 42, calc(0.36 + var(--night-mix) * 0.34)),
+        inset 0 -5px 10px -5px rgba(12, 20, 42, calc(0.20 + var(--night-mix) * 0.28)),
+        inset 5px 0 9px -5px rgba(12, 20, 42, calc(0.20 + var(--night-mix) * 0.22)),
+        inset -5px 0 9px -5px rgba(12, 20, 42, calc(0.20 + var(--night-mix) * 0.22));
+      z-index: 5;
+    }
+
+    /* =========================================================================
+       DISCREET SHOWCASE CONTROLS & OPTIONAL QA INSPECTOR
+       ========================================================================= */
+    .subtle-dock {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: 0 8px 24px -8px var(--color-shadow);
+      transition: background-color 360ms ease, border-color 360ms ease, box-shadow 360ms ease;
+    }
+
+    .dock-btn {
+      color: var(--color-muted);
+      transition: background-color 180ms ease, color 180ms ease;
+    }
+    .dock-btn:hover {
+      color: var(--color-text);
+      background-color: rgba(128, 148, 188, 0.14);
+    }
+    .dock-btn.active {
+      color: var(--color-text);
+      background-color: rgba(128, 148, 188, 0.22);
+      font-weight: 500;
+    }
+
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .inspector-panel {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      box-shadow: 0 18px 42px -12px var(--color-shadow);
+    }
+
+    .channel-bar-track {
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(128, 148, 188, 0.2);
+      overflow: hidden;
+    }
+    .channel-bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--color-accent);
+      transition: width 40ms linear;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center relative">
+  <!-- Ambient stage lighting layer -->
+  <div class="stage-ambient" aria-hidden="true"></div>
+
+  <!-- =========================================================================
+       CENTERPIECE PRESENTATION STAGE
+       ========================================================================= -->
+  <main class="w-full flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+    <div class="toggle-scale-wrapper">
+      <!-- Accessible Native Switch Control -->
+      <button
+        id="cinematicToggle"
+        type="button"
+        role="switch"
+        aria-checked="false"
+        aria-label="Toggle Light and Dark theme"
+        aria-disabled="false"
+        class="cinematic-toggle"
+      >
+        <div class="capsule-outer-bezel">
+          <div class="capsule-metal-night-overlay" aria-hidden="true"></div>
+          <div class="capsule-rim-highlight" aria-hidden="true"></div>
+
+          <div class="capsule-inner-bevel">
+            <div class="capsule-inner-bevel-night" aria-hidden="true"></div>
+
+            <div class="capsule-cavity">
+              <canvas id="sceneCanvas" class="scene-canvas" aria-hidden="true"></canvas>
+              <div class="cavity-depth-shadow" aria-hidden="true"></div>
+            </div>
+          </div>
+        </div>
+      </button>
+    </div>
+
+    <!-- Screen-reader live region for accessible theme announcements -->
+    <div id="srStatus" class="sr-only" aria-live="polite"></div>
+  </main>
+
+  <!-- =========================================================================
+       DISCREET BOTTOM DOCK (SIZE PREVIEW + AUDIO + VIDEO 9:16 + QA INSPECTOR)
+       ========================================================================= -->
+  <footer class="w-full max-w-2xl px-4 pb-6 pt-2 flex flex-col items-center gap-3 relative z-10">
+    <div class="subtle-dock rounded-full px-2 py-1.5 flex flex-wrap items-center justify-center gap-1 text-xs">
+      <span class="px-2.5 text-[11px] uppercase tracking-wider opacity-60 select-none">Size</span>
+      <button type="button" data-size="small" class="dock-btn px-3 py-1.5 rounded-full">Small</button>
+      <button type="button" data-size="medium" class="dock-btn px-3 py-1.5 rounded-full">Medium</button>
+      <button type="button" data-size="large" class="dock-btn active px-3 py-1.5 rounded-full">Large</button>
+
+      <div class="w-px h-4 mx-1 opacity-20 bg-current" aria-hidden="true"></div>
+
+      <button type="button" id="soundToggleBtn" class="dock-btn active px-3 py-1.5 rounded-full" title="Bật/tắt âm thanh thời gian thực">
+        Sound: <span id="soundLabel">On</span>
+      </button>
+      <button type="button" id="reducedMotionBtn" class="dock-btn px-3 py-1.5 rounded-full" title="Toggle Reduced Motion preview">
+        Motion: <span id="reducedMotionLabel">Auto</span>
+      </button>
+      <button type="button" id="videoStudioBtn" class="dock-btn px-3 py-1.5 rounded-full font-medium" title="Quay video dọc 9:16">
+        Video 9:16
+      </button>
+      <button type="button" id="inspectorToggleBtn" class="dock-btn px-3 py-1.5 rounded-full">
+        Inspector &amp; QA
+      </button>
+    </div>
+
+    <!-- Collapsible Telemetry, Lighting Channels & Automated QA Test Panel -->
+    <section
+      id="inspectorPanel"
+      class="inspector-panel hidden w-full rounded-2xl p-4 sm:p-5 text-xs"
+      aria-label="Developer Telemetry and QA Inspector"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b" style="border-color: var(--color-border);">
+        <div class="flex items-center gap-2">
+          <span class="font-semibold text-sm">Telemetry &amp; QA Inspector</span>
+          <span id="renderModeBadge" class="mono text-[10px] px-2 py-0.5 rounded-full" style="background: rgba(128,148,188,0.18);">WebGL</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" id="runTestsBtn" class="px-3 py-1.5 rounded-lg font-medium text-white transition active:scale-95" style="background: var(--color-accent);">
+            Run QA Tests
+          </button>
+          <button type="button" id="disableToggleBtn" class="dock-btn px-2.5 py-1.5 rounded-lg border" style="border-color: var(--color-border);">
+            Disabled: Off
+          </button>
+        </div>
+      </div>
+
+      <!-- Core State Metrics -->
+      <div class="grid grid-cols-2 sm:grid-cols-5 gap-2.5 mb-4">
+        <div class="rounded-xl p-2.5" style="background: rgba(128,148,188,0.08);">
+          <div class="opacity-60 text-[10px] uppercase">Theme</div>
+          <div id="statTheme" class="mono font-medium mt-0.5">light</div>
+        </div>
+        <div class="rounded-xl p-2.5" style="background: rgba(128,148,188,0.08);">
+          <div class="opacity-60 text-[10px] uppercase">Timeline</div>
+          <div id="statPhase" class="mono font-medium mt-0.5">idle_day</div>
+        </div>
+        <div class="rounded-xl p-2.5" style="background: rgba(128,148,188,0.08);">
+          <div class="opacity-60 text-[10px] uppercase">Lens Pos</div>
+          <div id="statLens" class="mono font-medium mt-0.5">0.000</div>
+        </div>
+        <div class="rounded-xl p-2.5" style="background: rgba(128,148,188,0.08);">
+          <div class="opacity-60 text-[10px] uppercase">Scene Time</div>
+          <div id="statTime" class="mono font-medium mt-0.5">09:30</div>
+        </div>
+        <div class="rounded-xl p-2.5 col-span-2 sm:col-span-1" style="background: rgba(128,148,188,0.08);">
+          <div class="opacity-60 text-[10px] uppercase">Frame Time</div>
+          <div id="statFps" class="mono font-medium mt-0.5">16.6ms</div>
+        </div>
+      </div>
+
+      <!-- 8 Independent Lighting Channels -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2.5 mb-3" id="lightingChannelsGrid"></div>
+
+      <!-- Automated Test Results Output -->
+      <div id="qaResultsBox" class="hidden mt-3 pt-3 border-t mono text-[11px] space-y-1 max-h-40 overflow-y-auto" style="border-color: var(--color-border);"></div>
+    </section>
+  </footer>
+
+  <!-- =========================================================================
+       9:16 VERTICAL VIDEO STUDIO MODAL (AUTO-CHOREOGRAPHY & MANUAL RECORDER)
+       ========================================================================= -->
+  <div
+    id="videoStudioModal"
+    class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"
+    style="background: rgba(8, 12, 26, 0.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);"
+    role="dialog"
+    aria-modal="true"
+    aria-label="9:16 Video Studio"
+  >
+    <div class="inspector-panel w-full max-w-md rounded-3xl p-4 sm:p-5 flex flex-col gap-3.5 max-h-[94vh] overflow-y-auto">
+      <div class="flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-semibold">Studio Video 9:16 (720×1280)</h2>
+          <p class="text-[11px] opacity-65">Tự động nghịch nút &amp; xuất video dọc 60fps có âm thanh</p>
+        </div>
+        <button
+          type="button"
+          id="closeVideoModalBtn"
+          class="dock-btn w-8 h-8 rounded-full flex items-center justify-center text-base"
+          aria-label="Đóng"
+        >✕</button>
+      </div>
+
+      <!-- 9:16 Live Preview Canvas & Recorded Video Player -->
+      <div class="relative mx-auto w-full max-w-[260px] aspect-[9/16] rounded-2xl overflow-hidden shadow-xl border" style="border-color: var(--color-border); background: #0C1029;">
+        <canvas id="videoExportCanvas" width="720" height="1280" class="w-full h-full block object-contain"></canvas>
+        <video
+          id="recordedVideoPreview"
+          class="hidden absolute inset-0 w-full h-full object-contain bg-black"
+          controls
+          loop
+          playsinline
+        ></video>
+
+        <!-- Recording Indicator Badge -->
+        <div
+          id="recBadge"
+          class="hidden absolute top-3 left-3 px-2.5 py-1 rounded-full text-[10px] font-semibold tracking-wider uppercase text-white flex items-center gap-1.5"
+          style="background: rgba(220, 38, 38, 0.88);"
+        >
+          <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+          <span id="recTimerText">REC 0.0s</span>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="w-full h-1.5 rounded-full overflow-hidden" style="background: rgba(128,148,188,0.2);">
+        <div id="videoProgressBar" class="h-full rounded-full transition-all duration-75" style="width: 0%; background: var(--color-accent);"></div>
+      </div>
+
+      <!-- Status Message -->
+      <div id="videoStatusMsg" class="text-center text-[11px] opacity-75">
+        Nhấn "Quay tự động (10s)" để tạo video dọc nghịch nút hoàn chỉnh.
+      </div>
+
+      <!-- Studio Action Buttons -->
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <button
+          type="button"
+          id="startAutoVideoBtn"
+          class="px-3 py-2.5 rounded-xl font-medium text-white transition active:scale-95"
+          style="background: var(--color-accent);"
+        >
+          ▶ Quay tự động (10s)
+        </button>
+        <button
+          type="button"
+          id="manualRecBtn"
+          class="dock-btn px-3 py-2.5 rounded-xl font-medium border"
+          style="border-color: var(--color-border);"
+        >
+          ● Tự nghịch &amp; Quay
+        </button>
+      </div>
+
+      <div id="downloadRow" class="hidden flex items-center gap-2 text-xs">
+        <a
+          id="downloadVideoLink"
+          download="pixel-liquid-glass-9x16.webm"
+          class="flex-1 text-center px-3 py-2.5 rounded-xl font-medium text-white transition active:scale-95"
+          style="background: #10B981;"
+        >
+          ⬇ Tải video 9:16
+        </a>
+        <button
+          type="button"
+          id="resetVideoPreviewBtn"
+          class="dock-btn px-3 py-2.5 rounded-xl border"
+          style="border-color: var(--color-border);"
+        >
+          Quay lại
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       APPLICATION ARCHITECTURE (MODULAR CLASSES IN SINGLE FILE)
+       1. MathUtils & Color Helpers
+       2. RealisticAudioEngine (Real-Time Web Audio API Synthesizer + Stream Bus)
+       3. LightingEngine (8 Independent Channels + Dual Forward Timelines)
+       4. PixelOfficeScene (Single-Source Crisp 222x120 Living Pixel-Art Scene)
+       5. LiquidGlassRenderer (WebGL Optical Refraction Shader + Canvas2D Fallback)
+       6. ThemeController (DOM, CSS Variables, localStorage, System Sync)
+       7. CinematicThemeToggle (Authoritative State Machine, Drag, Keyboard, A11y)
+       8. QATestSuite & 9:16 Video Studio
+       ========================================================================= -->
+  <script>
+    'use strict';
+
+    /* =========================================================================
+       1. MATH & COLOR UTILITIES
+       ========================================================================= */
+    const MathUtils = {
+      clamp(v, min, max) {
+        return v < min ? min : (v > max ? max : v);
+      },
+      lerp(a, b, t) {
+        return a + (b - a) * t;
+      },
+      smoothstep(edge0, edge1, x) {
+        const t = MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
+        return t * t * (3 - 2 * t);
+      },
+      bell(t, center, width) {
+        const d = (t - center) / width;
+        return Math.exp(-d * d * 2.6);
+      },
+      easeLens(t) {
+        t = MathUtils.clamp(t, 0, 1);
+        if (t === 0 || t === 1) return t;
+        const c4 = (2 * Math.PI) / 3.4;
+        const cubic = t < 0.5
+          ? 4 * t * t * t
+          : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        const settle = Math.pow(2, -8 * t) * Math.sin((t * 6.5 - 0.75) * c4) * 0.032;
+        return MathUtils.clamp(cubic + (t > 0.65 ? settle * (1 - t) * 2.8 : 0), 0, 1.022);
+      },
+      lerpRGB(c1, c2, t) {
+        t = MathUtils.clamp(t, 0, 1);
+        return [
+          Math.round(c1[0] + (c2[0] - c1[0]) * t),
+          Math.round(c1[1] + (c2[1] - c1[1]) * t),
+          Math.round(c1[2] + (c2[2] - c1[2]) * t)
+        ];
+      },
+      rgbStr(rgb, a = 1) {
+        if (a >= 0.999) return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a.toFixed(3)})`;
+      }
+    };
+
+    /* =========================================================================
+       2. REALISTIC AUDIO ENGINE (WEB AUDIO API REAL-TIME SYNTHESIS)
+          - Velocity-mapped liquid-glass sliding resonance & tactile clicks
+          - Magnetic capsule detent snap on settle
+          - Mechanical desk-lamp switch click synchronized with lighting channel
+          - Subtle office keyboard typing taps synced with pixel worker animation
+          - Exposes MediaStreamAudioDestinationNode for 9:16 Video Studio muxing
+       ========================================================================= */
+    class RealisticAudioEngine {
+      constructor() {
+        this.enabled = true;
+        this.ctx = null;
+        this.masterGain = null;
+        this.streamDest = null;
+        this.noiseBuffer = null;
+
+        this.slideGain = null;
+        this.slideFilter = null;
+        this.ambienceGain = null;
+        this.ambienceFilter = null;
+
+        this._lampWasOn = false;
+        this._lastTypeStep = -1;
+      }
+
+      unlock() {
+        if (!this.enabled) return;
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+
+        if (!this.ctx) {
+          this.ctx = new AudioCtx();
+          this.masterGain = this.ctx.createGain();
+          this.masterGain.gain.value = 0.72;
+          this.masterGain.connect(this.ctx.destination);
+
+          if (this.ctx.createMediaStreamDestination) {
+            this.streamDest = this.ctx.createMediaStreamDestination();
+            this.masterGain.connect(this.streamDest);
+          }
+
+          this._createNoiseBuffer();
+          this._setupContinuousLayers();
+        }
+
+        if (this.ctx.state === 'suspended') {
+          this.ctx.resume().catch(() => {});
+        }
+      }
+
+      _createNoiseBuffer() {
+        const sr = this.ctx.sampleRate;
+        const len = sr * 2;
+        const buf = this.ctx.createBuffer(1, len, sr);
+        const data = buf.getChannelData(0);
+        let b0 = 0, b1 = 0, b2 = 0;
+        for (let i = 0; i < len; i++) {
+          const white = Math.random() * 2 - 1;
+          b0 = 0.997 * b0 + white * 0.029;
+          b1 = 0.985 * b1 + white * 0.032;
+          b2 = 0.950 * b2 + white * 0.048;
+          data[i] = (b0 + b1 + b2 + white * 0.14) * 0.65;
+        }
+        this.noiseBuffer = buf;
+      }
+
+      _setupContinuousLayers() {
+        // 1. Velocity-sensitive glass-on-metal sliding friction layer
+        const slideSrc = this.ctx.createBufferSource();
+        slideSrc.buffer = this.noiseBuffer;
+        slideSrc.loop = true;
+
+        this.slideFilter = this.ctx.createBiquadFilter();
+        this.slideFilter.type = 'bandpass';
+        this.slideFilter.frequency.value = 1400;
+        this.slideFilter.Q.value = 3.2;
+
+        this.slideGain = this.ctx.createGain();
+        this.slideGain.gain.value = 0.0001;
+
+        slideSrc.connect(this.slideFilter);
+        this.slideFilter.connect(this.slideGain);
+        this.slideGain.connect(this.masterGain);
+        slideSrc.start();
+
+        // 2. Subtle room-tone air bed (warm daytime air <-> quiet deep night hum)
+        const ambSrc = this.ctx.createBufferSource();
+        ambSrc.buffer = this.noiseBuffer;
+        ambSrc.loop = true;
+
+        this.ambienceFilter = this.ctx.createBiquadFilter();
+        this.ambienceFilter.type = 'lowpass';
+        this.ambienceFilter.frequency.value = 320;
+
+        this.ambienceGain = this.ctx.createGain();
+        this.ambienceGain.gain.value = 0.018;
+
+        ambSrc.connect(this.ambienceFilter);
+        this.ambienceFilter.connect(this.ambienceGain);
+        this.ambienceGain.connect(this.masterGain);
+        ambSrc.start();
+      }
+
+      setEnabled(flag) {
+        this.enabled = Boolean(flag);
+        if (this.masterGain && this.ctx) {
+          const now = this.ctx.currentTime;
+          this.masterGain.gain.setTargetAtTime(this.enabled ? 0.72 : 0.0, now, 0.03);
+        }
+      }
+
+      getMediaStream() {
+        this.unlock();
+        return this.streamDest ? this.streamDest.stream : null;
+      }
+
+      playClick(isDown = true) {
+        if (!this.enabled) return;
+        this.unlock();
+        if (!this.ctx) return;
+
+        const now = this.ctx.currentTime;
+
+        // Short resonant glass-metal tap
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(isDown ? 1180 : 1460, now);
+        osc.frequency.exponentialRampToValueAtTime(isDown ? 360 : 520, now + 0.028);
+
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.14, now + 0.003);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.036);
+
+        osc.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start(now);
+        osc.stop(now + 0.042);
+
+        // Micro transient noise burst
+        const nSrc = this.ctx.createBufferSource();
+        nSrc.buffer = this.noiseBuffer;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 2400;
+        const nGain = this.ctx.createGain();
+        nGain.gain.setValueAtTime(0.08, now);
+        nGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
+
+        nSrc.connect(filter);
+        filter.connect(nGain);
+        nGain.connect(this.masterGain);
+        nSrc.start(now, Math.random() * 1.2, 0.025);
+      }
+
+      playSnap(toDark) {
+        if (!this.enabled || !this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        // Soft magnetic detent thud + crystalline glass shimmer
+        const thud = this.ctx.createOscillator();
+        const thudGain = this.ctx.createGain();
+        thud.type = 'sine';
+        thud.frequency.setValueAtTime(toDark ? 190 : 230, now);
+        thud.frequency.exponentialRampToValueAtTime(72, now + 0.075);
+
+        thudGain.gain.setValueAtTime(0.001, now);
+        thudGain.gain.linearRampToValueAtTime(0.18, now + 0.005);
+        thudGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
+
+        thud.connect(thudGain);
+        thudGain.connect(this.masterGain);
+        thud.start(now);
+        thud.stop(now + 0.095);
+
+        // Tiny glass ring harmonic
+        const chime = this.ctx.createOscillator();
+        const chimeGain = this.ctx.createGain();
+        chime.type = 'sine';
+        chime.frequency.setValueAtTime(toDark ? 1760 : 2093, now);
+        chimeGain.gain.setValueAtTime(0.026, now);
+        chimeGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+
+        chime.connect(chimeGain);
+        chimeGain.connect(this.masterGain);
+        chime.start(now);
+        chime.stop(now + 0.15);
+      }
+
+      playLampSwitch(turnOn) {
+        if (!this.enabled || !this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        // Crisp double-stage mechanical desk-lamp switch click
+        const clickAt = (offset, freq, amp) => {
+          const src = this.ctx.createBufferSource();
+          src.buffer = this.noiseBuffer;
+          const bp = this.ctx.createBiquadFilter();
+          bp.type = 'bandpass';
+          bp.frequency.value = freq;
+          bp.Q.value = 4.5;
+          const g = this.ctx.createGain();
+          g.gain.setValueAtTime(amp, now + offset);
+          g.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.022);
+          src.connect(bp);
+          bp.connect(g);
+          g.connect(this.masterGain);
+          src.start(now + offset, Math.random(), 0.03);
+        };
+
+        clickAt(0.0, turnOn ? 2800 : 2100, 0.22);
+        clickAt(0.016, turnOn ? 4100 : 1650, 0.15);
+      }
+
+      playKeyTap() {
+        if (!this.enabled || !this.ctx || this.ctx.state !== 'running') return;
+        const now = this.ctx.currentTime;
+
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noiseBuffer;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = 1850 + Math.random() * 900;
+        bp.Q.value = 3.5;
+
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.024, now);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + 0.014);
+
+        src.connect(bp);
+        bp.connect(g);
+        g.connect(this.masterGain);
+        src.start(now, Math.random() * 1.4, 0.02);
+      }
+
+      updateContinuous(velocity, channels, animTime, reducedMotion) {
+        if (!this.enabled || !this.ctx || this.ctx.state !== 'running') return;
+        const now = this.ctx.currentTime;
+
+        // 1. Velocity-responsive liquid-glass glide sound
+        const speed = MathUtils.clamp(Math.abs(velocity), 0, 1.5);
+        const targetSlideGain = speed > 0.02 ? Math.min(0.11, speed * 0.09) : 0.0001;
+        const targetSlideFreq = 900 + speed * 1400;
+        this.slideGain.gain.setTargetAtTime(targetSlideGain, now, 0.03);
+        this.slideFilter.frequency.setTargetAtTime(targetSlideFreq, now, 0.04);
+
+        // 2. Room ambience shifts smoothly between open day air and cozy night tone
+        const ambFreq = MathUtils.lerp(420, 185, channels.darkness);
+        const ambGain = MathUtils.lerp(0.016, 0.024, channels.darkness);
+        this.ambienceFilter.frequency.setTargetAtTime(ambFreq, now, 0.15);
+        this.ambienceGain.gain.setTargetAtTime(ambGain, now, 0.15);
+
+        // 3. Synchronized mechanical desk lamp switch click
+        const lampIsOn = channels.deskLampEmission > 0.22;
+        if (lampIsOn !== this._lampWasOn) {
+          this._lampWasOn = lampIsOn;
+          this.playLampSwitch(lampIsOn);
+        }
+
+        // 4. Subtle mechanical keyboard clicks synchronized with pixel worker typing
+        if (!reducedMotion) {
+          const isNightFocus = channels.darkness > 0.45;
+          const step = Math.floor(animTime * (isNightFocus ? 6.5 : 3.8));
+          if (step !== this._lastTypeStep) {
+            this._lastTypeStep = step;
+            // Realistic irregular cadence (skip occasional beats like natural typing)
+            if (Math.random() < (isNightFocus ? 0.55 : 0.30)) {
+              this.playKeyTap();
+            }
+          }
+        }
+      }
+
+      destroy() {
+        if (this.ctx) {
+          this.ctx.close().catch(() => {});
+          this.ctx = null;
+        }
+      }
+    }
+
+    /* =========================================================================
+       3. LIGHTING ENGINE & DUAL FORWARD-TIME SEQUENCES
+          - Evaluates 8 independent lighting channels
+          - Separates `day_to_night` (sunset) from `night_to_next_day` (sunrise)
+       ========================================================================= */
+    class LightingEngine {
+      constructor() {
+        this.channels = this.getRestingChannels('light');
+      }
+
+      getRestingChannels(mode) {
+        if (mode === 'dark') {
+          return {
+            ambientDaylight: 0.08,
+            sunsetWarmth: 0.00,
+            sunriseWarmth: 0.00,
+            nightAmbient: 0.45,
+            cityWindowEmission: 0.85,
+            monitorEmission: 0.80,
+            deskLampEmission: 1.00,
+            glassReflectionIntensity: 0.35,
+            frameReflectionIntensity: 0.25,
+            darkness: 1.00
+          };
+        }
+        return {
+          ambientDaylight: 1.00,
+          sunsetWarmth: 0.00,
+          sunriseWarmth: 0.00,
+          nightAmbient: 0.00,
+          cityWindowEmission: 0.05,
+          monitorEmission: 0.15,
+          deskLampEmission: 0.00,
+          glassReflectionIntensity: 0.90,
+          frameReflectionIntensity: 0.85,
+          darkness: 0.00
+        };
+      }
+
+      evaluateDayToNight(p) {
+        p = MathUtils.clamp(p, 0, 1);
+        const dayDrop = MathUtils.smoothstep(0.18, 0.82, p);
+        const sunset = MathUtils.bell(p, 0.44, 0.25);
+        const nightRise = MathUtils.smoothstep(0.38, 0.92, p);
+        const cityLights = MathUtils.smoothstep(0.45, 0.94, p);
+        const monitorRise = MathUtils.smoothstep(0.18, 0.72, p);
+        const lampRise = MathUtils.smoothstep(0.46, 0.88, p);
+        const reflectDrop = MathUtils.smoothstep(0.22, 0.86, p);
+
+        return {
+          ambientDaylight: MathUtils.lerp(1.00, 0.08, dayDrop),
+          sunsetWarmth: MathUtils.clamp(sunset * 1.05, 0, 1),
+          sunriseWarmth: 0.0,
+          nightAmbient: MathUtils.lerp(0.00, 0.45, nightRise),
+          cityWindowEmission: MathUtils.lerp(0.05, 0.85, cityLights),
+          monitorEmission: MathUtils.lerp(0.15, 0.80, monitorRise),
+          deskLampEmission: MathUtils.lerp(0.00, 1.00, lampRise),
+          glassReflectionIntensity: MathUtils.lerp(0.90, 0.35, reflectDrop),
+          frameReflectionIntensity: MathUtils.lerp(0.85, 0.25, reflectDrop),
+          darkness: MathUtils.smoothstep(0.28, 0.88, p)
+        };
+      }
+
+      evaluateNightToNextDay(p) {
+        p = MathUtils.clamp(p, 0, 1);
+        const preDawnLift = MathUtils.smoothstep(0.08, 0.76, p);
+        const sunrise = MathUtils.bell(p, 0.46, 0.23);
+        const nightFade = MathUtils.smoothstep(0.16, 0.78, p);
+        const cityFade = MathUtils.smoothstep(0.30, 0.84, p);
+        const monitorFade = MathUtils.smoothstep(0.28, 0.82, p);
+        const lampFade = MathUtils.smoothstep(0.32, 0.74, p);
+        const reflectRise = MathUtils.smoothstep(0.18, 0.84, p);
+
+        return {
+          ambientDaylight: MathUtils.lerp(0.08, 1.00, preDawnLift),
+          sunsetWarmth: 0.0,
+          sunriseWarmth: MathUtils.clamp(sunrise * 0.95, 0, 1),
+          nightAmbient: MathUtils.lerp(0.45, 0.00, nightFade),
+          cityWindowEmission: MathUtils.lerp(0.85, 0.05, cityFade),
+          monitorEmission: MathUtils.lerp(0.80, 0.15, monitorFade),
+          deskLampEmission: MathUtils.lerp(1.00, 0.00, lampFade),
+          glassReflectionIntensity: MathUtils.lerp(0.35, 0.90, reflectRise),
+          frameReflectionIntensity: MathUtils.lerp(0.25, 0.85, reflectRise),
+          darkness: 1.0 - MathUtils.smoothstep(0.14, 0.76, p)
+        };
+      }
+
+      blendChannels(fromCh, toCh, t) {
+        const out = {};
+        for (const key in toCh) {
+          out[key] = MathUtils.lerp(fromCh[key] ?? 0, toCh[key], t);
+        }
+        return out;
+      }
+
+      formatLogicalClock(timeline, progress) {
+        let hours = 10.5;
+        if (timeline === 'idle_day') hours = 10.5;
+        else if (timeline === 'idle_night') hours = 22.5;
+        else if (timeline === 'day_to_night') hours = MathUtils.lerp(14.5, 22.5, progress);
+        else if (timeline === 'night_to_next_day') hours = MathUtils.lerp(3.5, 9.5, progress);
+        const h = Math.floor(hours) % 24;
+        const m = Math.floor((hours - Math.floor(hours)) * 60);
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      }
+    }
+
+    /* =========================================================================
+       4. PIXEL-ART OFFICE SCENE (SINGLE-SOURCE OFFSCREEN RENDERER)
+          - High-detail crisp pixel grid: 222 x 120 (exact 1.85:1 aspect)
+          - Living environment: drifting clouds, twinkling stars, city traffic,
+            working analog wall clock, steaming coffee mug, animated code typing,
+            blinking worker, PC tower LEDs, printer standby LED, lamp dust motes
+       ========================================================================= */
+    class PixelOfficeScene {
+      constructor() {
+        this.width = 222;
+        this.height = 120;
+
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = this.width;
+        this.canvas.height = this.height;
+        this.ctx = this.canvas.getContext('2d', { alpha: false });
+        this.ctx.imageSmoothingEnabled = false;
+
+        this.cityBuildings = this._createCityLayout();
+        this.stars = this._createStars();
+        this.clouds = [
+          { x: 6, y: 14, w: 15, speed: 0.9 },
+          { x: 36, y: 22, w: 12, speed: 0.65 },
+          { x: 52, y: 10, w: 10, speed: 1.15 }
+        ];
+        this.dustMotes = [
+          { bx: 132, by: 62, phase: 0.2, speed: 0.8 },
+          { bx: 142, by: 56, phase: 1.9, speed: 0.6 },
+          { bx: 126, by: 68, phase: 3.4, speed: 0.7 },
+          { bx: 138, by: 66, phase: 4.8, speed: 0.5 }
+        ];
+      }
+
+      _createStars() {
+        const stars = [];
+        let seed = 9137;
+        const rand = () => {
+          seed = (seed * 16807) % 2147483647;
+          return (seed - 1) / 2147483646;
+        };
+        for (let i = 0; i < 22; i++) {
+          stars.push({
+            x: Math.floor(2 + rand() * 64),
+            y: Math.floor(6 + rand() * 26),
+            phase: rand() * Math.PI * 2,
+            speed: 1.2 + rand() * 2.4
+          });
+        }
+        return stars;
+      }
+
+      _createCityLayout() {
+        const buildings = [
+          { x: 2,  y: 26, w: 13, h: 64, depth: 0, antenna: true,  dayCol: [152, 182, 214], nightCol: [20, 32, 62] },
+          { x: 16, y: 16, w: 15, h: 74, depth: 0, antenna: true,  dayCol: [140, 172, 208], nightCol: [18, 29, 56] },
+          { x: 32, y: 24, w: 14, h: 66, depth: 0, antenna: false, dayCol: [156, 185, 216], nightCol: [22, 35, 66] },
+          { x: 48, y: 19, w: 16, h: 71, depth: 0, antenna: true,  dayCol: [144, 176, 210], nightCol: [19, 31, 59] },
+          { x: 0,  y: 38, w: 15, h: 52, depth: 1, antenna: false, dayCol: [118, 150, 186], nightCol: [15, 24, 48] },
+          { x: 18, y: 31, w: 17, h: 59, depth: 1, antenna: false, dayCol: [108, 140, 178], nightCol: [14, 22, 44] },
+          { x: 38, y: 36, w: 19, h: 54, depth: 1, antenna: false, dayCol: [122, 154, 190], nightCol: [16, 26, 51] },
+          { x: 58, y: 42, w: 10, h: 48, depth: 1, antenna: false, dayCol: [114, 146, 182], nightCol: [15, 24, 46] }
+        ];
+
+        let seed = 4219;
+        const rand = () => {
+          seed = (seed * 16807) % 2147483647;
+          return (seed - 1) / 2147483646;
+        };
+
+        for (const b of buildings) {
+          b.windows = [];
+          for (let wy = b.y + 4; wy < 86; wy += 5) {
+            for (let wx = b.x + 2; wx < b.x + b.w - 3; wx += 4) {
+              const r = rand();
+              if (r < 0.66) {
+                const warmPick = rand();
+                const color = warmPick < 0.56
+                  ? [255, 224, 130]
+                  : (warmPick < 0.84 ? [248, 174, 84] : [138, 208, 255]);
+                b.windows.push({
+                  x: wx,
+                  y: wy,
+                  threshold: 0.10 + rand() * 0.72,
+                  intensity: 0.62 + rand() * 0.38,
+                  color
+                });
+              }
+            }
+          }
+        }
+        return buildings;
+      }
+
+      _litColor(dayRGB, nightRGB, ch, warmWeight = 0.25) {
+        const t = MathUtils.clamp(ch.darkness, 0, 1);
+        let c = MathUtils.lerpRGB(dayRGB, nightRGB, t);
+        if (ch.sunsetWarmth > 0.01) {
+          c = MathUtils.lerpRGB(c, [242, 150, 82], ch.sunsetWarmth * warmWeight);
+        }
+        if (ch.sunriseWarmth > 0.01) {
+          c = MathUtils.lerpRGB(c, [246, 178, 152], ch.sunriseWarmth * warmWeight);
+        }
+        return c;
+      }
+
+      px(x, y, w, h, rgb, a = 1) {
+        this.ctx.fillStyle = MathUtils.rgbStr(rgb, a);
+        this.ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+      }
+
+      render(ch, animTime, transitionActivity, reducedMotion, logicalHours = 10.5) {
+        this.ctx.imageSmoothingEnabled = false;
+        this._drawRoomShell(ch);
+        this._drawCityWindow(ch, animTime, reducedMotion);
+        this._drawTiledFloor(ch);
+        this._drawWallDecorations(ch, logicalHours);
+        this._drawRightStorage(ch, animTime, reducedMotion);
+        this._drawWorkstationAndWorker(ch, animTime, transitionActivity, reducedMotion);
+        this._drawLocalLightSources(ch, animTime, reducedMotion);
+      }
+
+      _drawRoomShell(ch) {
+        const ceilCol = this._litColor([214, 221, 234], [15, 23, 45], ch, 0.14);
+        this.px(0, 0, 222, 11, ceilCol);
+        this.px(0, 10, 222, 1, this._litColor([194, 203, 219], [11, 18, 36], ch, 0.12));
+
+        const wallCol = this._litColor([242, 244, 249], [25, 38, 69], ch, 0.22);
+        const wallSeam = this._litColor([231, 235, 244], [21, 32, 59], ch, 0.16);
+        this.px(68, 11, 154, 79, wallCol);
+        this.px(110, 11, 1, 79, wallSeam);
+        this.px(158, 11, 1, 79, wallSeam);
+
+        this.px(68, 86, 154, 4, this._litColor([204, 211, 224], [17, 27, 50], ch, 0.16));
+        this.px(68, 86, 154, 1, this._litColor([224, 229, 238], [26, 39, 70], ch, 0.14));
+
+        const pillarCol = this._litColor([208, 216, 230], [21, 33, 60], ch, 0.20);
+        this.px(66, 9, 5, 83, pillarCol);
+        this.px(70, 9, 1, 83, this._litColor([180, 191, 210], [14, 22, 42], ch, 0.12));
+
+        const lightFixture = this._litColor([252, 254, 255], [30, 44, 76], ch, 0.10);
+        this.px(98, 4, 44, 3, lightFixture);
+        this.px(100, 7, 40, 1, this._litColor([236, 242, 252], [22, 34, 62], ch, 0.10));
+      }
+
+      _drawCityWindow(ch, animTime, reducedMotion) {
+        const skyTopDay = [146, 198, 244];
+        const skyBotDay = [210, 234, 252];
+        const skyTopNight = [10, 17, 40];
+        const skyBotNight = [22, 36, 72];
+
+        let topCol = MathUtils.lerpRGB(skyTopDay, skyTopNight, ch.darkness);
+        let botCol = MathUtils.lerpRGB(skyBotDay, skyBotNight, ch.darkness);
+
+        if (ch.sunsetWarmth > 0.01) {
+          topCol = MathUtils.lerpRGB(topCol, [116, 98, 166], ch.sunsetWarmth * 0.68);
+          botCol = MathUtils.lerpRGB(botCol, [254, 152, 74], ch.sunsetWarmth * 0.94);
+        }
+        if (ch.sunriseWarmth > 0.01) {
+          topCol = MathUtils.lerpRGB(topCol, [112, 148, 210], ch.sunriseWarmth * 0.58);
+          botCol = MathUtils.lerpRGB(botCol, [255, 190, 156], ch.sunriseWarmth * 0.90);
+        }
+
+        for (let y = 6; y < 90; y += 2) {
+          const gy = (y - 6) / 84;
+          this.px(0, y, 66, 2, MathUtils.lerpRGB(topCol, botCol, gy));
+        }
+
+        if (ch.darkness > 0.45) {
+          const starVis = MathUtils.smoothstep(0.45, 0.85, ch.darkness);
+          for (const st of this.stars) {
+            const tw = reducedMotion ? 0.8 : (0.45 + 0.55 * Math.sin(animTime * st.speed + st.phase));
+            this.px(st.x, st.y, 1, 1, [224, 236, 255], starVis * tw * 0.85);
+          }
+        }
+
+        if (ch.ambientDaylight > 0.12 || ch.sunsetWarmth > 0.1 || ch.sunriseWarmth > 0.1) {
+          let cloudCol = [248, 252, 255];
+          if (ch.sunsetWarmth > 0.05) cloudCol = MathUtils.lerpRGB(cloudCol, [255, 198, 138], ch.sunsetWarmth * 0.85);
+          if (ch.sunriseWarmth > 0.05) cloudCol = MathUtils.lerpRGB(cloudCol, [255, 214, 200], ch.sunriseWarmth * 0.85);
+          const cAlpha = MathUtils.clamp(ch.ambientDaylight * 0.72 + (ch.sunsetWarmth + ch.sunriseWarmth) * 0.45, 0, 0.8);
+
+          for (const cl of this.clouds) {
+            const cx = reducedMotion ? cl.x : ((cl.x + animTime * cl.speed) % 82) - 16;
+            this.px(cx, cl.y, cl.w, 3, cloudCol, cAlpha);
+            this.px(cx + 3, cl.y - 2, cl.w - 6, 2, cloudCol, cAlpha * 0.9);
+          }
+        }
+
+        this.px(0, 72, 66, 18, MathUtils.lerpRGB(botCol, [255, 255, 255], 0.16 * ch.ambientDaylight), 0.32);
+
+        for (const b of this.cityBuildings) {
+          let bCol = MathUtils.lerpRGB(b.dayCol, b.nightCol, ch.darkness);
+          if (ch.sunsetWarmth > 0.01) {
+            bCol = MathUtils.lerpRGB(bCol, [154, 96, 84], ch.sunsetWarmth * (b.depth === 0 ? 0.56 : 0.36));
+          }
+          if (ch.sunriseWarmth > 0.01) {
+            bCol = MathUtils.lerpRGB(bCol, [152, 124, 152], ch.sunriseWarmth * (b.depth === 0 ? 0.52 : 0.32));
+          }
+          this.px(b.x, b.y, b.w, b.h, bCol);
+
+          if (b.antenna) {
+            this.px(b.x + Math.floor(b.w / 2), b.y - 5, 1, 5, bCol);
+            if (ch.cityWindowEmission > 0.25) {
+              const blink = reducedMotion ? 0.85 : (0.45 + 0.55 * Math.sin(animTime * 2.8 + b.x));
+              this.px(b.x + Math.floor(b.w / 2), b.y - 6, 1, 1, [255, 84, 98], ch.cityWindowEmission * blink);
+            }
+          }
+          this.px(b.x + 2, b.y - 2, 4, 2, bCol);
+
+          const edgeCol = MathUtils.lerpRGB([214, 234, 252], [40, 60, 102], ch.darkness);
+          this.px(b.x + b.w - 1, b.y, 1, b.h, edgeCol, 0.65);
+
+          const darkWin = MathUtils.lerpRGB([164, 198, 228], [10, 16, 34], ch.darkness);
+          for (let wy = b.y + 4; wy < 86; wy += 5) {
+            for (let wx = b.x + 2; wx < b.x + b.w - 3; wx += 4) {
+              this.px(wx, wy, 2, 3, darkWin, 0.72);
+            }
+          }
+
+          if (ch.cityWindowEmission > 0.05) {
+            for (const w of b.windows) {
+              const alpha = MathUtils.smoothstep(
+                w.threshold - 0.12,
+                w.threshold + 0.16,
+                ch.cityWindowEmission
+              ) * w.intensity;
+              if (alpha > 0.04) {
+                this.px(w.x, w.y, 2, 3, w.color, alpha);
+              }
+            }
+          }
+        }
+
+        if (ch.cityWindowEmission > 0.3 && !reducedMotion) {
+          const tAlpha = MathUtils.smoothstep(0.3, 0.75, ch.cityWindowEmission) * 0.85;
+          const car1X = (animTime * 9.5) % 66;
+          const car2X = 66 - ((animTime * 7.2 + 22) % 66);
+          const car3X = (animTime * 11.0 + 38) % 66;
+          this.px(car1X, 85, 2, 1, [255, 236, 178], tAlpha);
+          this.px(car2X, 86, 2, 1, [255, 92, 92], tAlpha);
+          this.px(car3X, 85, 2, 1, [255, 242, 196], tAlpha * 0.8);
+        }
+
+        const glassSheenAlpha = 0.07 + ch.ambientDaylight * 0.15;
+        const sheenCol = ch.sunsetWarmth > 0.2
+          ? [255, 224, 180]
+          : (ch.sunriseWarmth > 0.2 ? [255, 220, 210] : [224, 244, 255]);
+        for (let i = 0; i < 32; i++) {
+          this.px(8 + i, 14 + Math.floor(i * 1.45), 4, 2, sheenCol, glassSheenAlpha);
+        }
+        for (let i = 0; i < 20; i++) {
+          this.px(36 + i, 10 + Math.floor(i * 1.35), 2, 2, sheenCol, glassSheenAlpha * 0.75);
+        }
+
+        this.px(0, 6, 66, 3, this._litColor([184, 196, 214], [24, 34, 62], ch, 0.15));
+
+        const frameMain = this._litColor([84, 106, 136], [16, 24, 46], ch, 0.18);
+        const frameHi = this._litColor([140, 162, 190], [34, 48, 80], ch, 0.18);
+
+        this.px(22, 6, 3, 84, frameMain);
+        this.px(24, 6, 1, 84, frameHi, 0.5);
+        this.px(45, 6, 3, 84, frameMain);
+        this.px(47, 6, 1, 84, frameHi, 0.5);
+        this.px(63, 6, 3, 84, frameMain);
+
+        this.px(0, 39, 66, 2, frameMain);
+        this.px(0, 88, 68, 4, frameMain);
+        this.px(0, 88, 68, 1, frameHi, 0.75);
+      }
+
+      _drawTiledFloor(ch) {
+        const tileLight = this._litColor([154, 170, 194], [23, 35, 64], ch, 0.22);
+        const tileDark  = this._litColor([134, 151, 176], [18, 28, 52], ch, 0.22);
+        const groutCol  = this._litColor([114, 131, 156], [13, 21, 40], ch, 0.15);
+
+        this.px(0, 90, 222, 30, tileLight);
+
+        const rowHeights = [5, 6, 7, 6, 6];
+        let cy = 90;
+        for (let r = 0; r < rowHeights.length; r++) {
+          const rh = rowHeights[r];
+          const tileW = 20 + r * 4;
+          const offset = (r % 2) * Math.floor(tileW / 2);
+          for (let tx = -tileW; tx < 236; tx += tileW) {
+            const idx = Math.floor((tx + tileW * 5) / tileW);
+            const isAlt = (idx + r) % 2 === 0;
+            this.px(tx + offset, cy, tileW, rh, isAlt ? tileLight : tileDark);
+            this.px(tx + offset, cy, 1, rh, groutCol, 0.52);
+          }
+          this.px(0, cy, 222, 1, groutCol, 0.68);
+          cy += rh;
+        }
+
+        if (ch.ambientDaylight > 0.14 || ch.sunsetWarmth > 0.08 || ch.sunriseWarmth > 0.08) {
+          let shaftCol = [218, 238, 255];
+          if (ch.sunsetWarmth > 0.08) shaftCol = MathUtils.lerpRGB(shaftCol, [255, 186, 108], ch.sunsetWarmth);
+          if (ch.sunriseWarmth > 0.08) shaftCol = MathUtils.lerpRGB(shaftCol, [255, 208, 184], ch.sunriseWarmth);
+          const alpha = 0.19 * ch.ambientDaylight + 0.18 * (ch.sunsetWarmth + ch.sunriseWarmth);
+          for (let i = 0; i < 24; i++) {
+            this.px(6 + Math.floor(i * 0.7), 91 + i, 52, 1, shaftCol, alpha * (1 - i / 36));
+          }
+        }
+      }
+
+      _drawWallDecorations(ch, logicalHours) {
+        const clockRim = this._litColor([92, 108, 134], [24, 36, 66], ch, 0.15);
+        const clockFace = this._litColor([252, 253, 255], [40, 56, 94], ch, 0.18);
+        const clockHand = this._litColor([46, 58, 82], [182, 206, 248], ch, 0.1);
+        this.px(76, 16, 9, 11, clockRim);
+        this.px(75, 17, 11, 9, clockRim);
+        this.px(77, 17, 7, 9, clockFace);
+        this.px(76, 18, 9, 7, clockFace);
+        const cx = 80, cy = 21;
+        const hAngle = ((logicalHours % 12) / 12) * Math.PI * 2 - Math.PI / 2;
+        const mAngle = ((logicalHours % 1)) * Math.PI * 2 - Math.PI / 2;
+        this.px(cx, cy, 1, 1, clockHand);
+        this.px(cx + Math.round(Math.cos(hAngle) * 2), cy + Math.round(Math.sin(hAngle) * 2), 1, 1, clockHand);
+        this.px(cx + Math.round(Math.cos(mAngle) * 3), cy + Math.round(Math.sin(mAngle) * 3), 1, 1, [226, 98, 98]);
+
+        const frameCol = this._litColor([88, 104, 130], [20, 30, 56], ch, 0.15);
+        const canvasCol = this._litColor([252, 253, 255], [32, 46, 80], ch, 0.18);
+        this.px(91, 18, 32, 21, frameCol);
+        this.px(92, 19, 30, 19, canvasCol);
+
+        const gridCol = this._litColor([228, 234, 244], [44, 60, 96], ch, 0.1);
+        this.px(94, 24, 26, 1, gridCol);
+        this.px(94, 29, 26, 1, gridCol);
+        this.px(94, 34, 26, 1, gridCol);
+
+        this.px(95, 32, 3, 4, this._litColor([98, 156, 228], [52, 92, 154], ch, 0.1));
+        this.px(100, 29, 3, 7, this._litColor([98, 156, 228], [52, 92, 154], ch, 0.1));
+        this.px(105, 27, 3, 9, this._litColor([84, 188, 168], [46, 118, 118], ch, 0.1));
+        this.px(110, 25, 3, 11, this._litColor([244, 178, 88], [164, 116, 62], ch, 0.2));
+        this.px(115, 22, 3, 14, this._litColor([236, 118, 106], [156, 78, 84], ch, 0.2));
+
+        const lineCol = this._litColor([54, 102, 178], [122, 178, 252], ch, 0.1);
+        this.px(95, 31, 4, 1, lineCol);
+        this.px(99, 28, 5, 1, lineCol);
+        this.px(104, 26, 5, 1, lineCol);
+        this.px(109, 24, 5, 1, lineCol);
+        this.px(114, 21, 5, 1, lineCol);
+
+        const boardBorder = this._litColor([164, 174, 192], [28, 40, 68], ch, 0.18);
+        const boardBg = this._litColor([224, 228, 238], [36, 50, 82], ch, 0.18);
+        this.px(128, 20, 28, 22, boardBorder);
+        this.px(129, 21, 26, 20, boardBg);
+
+        this.px(131, 23, 6, 6, this._litColor([252, 226, 118], [148, 128, 68], ch, 0.2));
+        this.px(139, 22, 6, 6, this._litColor([250, 154, 156], [142, 76, 94], ch, 0.2));
+        this.px(147, 24, 6, 6, this._litColor([136, 212, 244], [64, 114, 154], ch, 0.15));
+        this.px(132, 32, 6, 6, this._litColor([154, 224, 168], [68, 124, 96], ch, 0.15));
+        this.px(141, 31, 7, 7, this._litColor([255, 194, 112], [156, 112, 66], ch, 0.2));
+
+        const inkCol = this._litColor([124, 118, 112], [58, 56, 68], ch, 0.1);
+        this.px(132, 25, 4, 1, inkCol, 0.45);
+        this.px(140, 24, 4, 1, inkCol, 0.45);
+        this.px(142, 34, 5, 1, inkCol, 0.45);
+      }
+
+      _drawRightStorage(ch, animTime, reducedMotion) {
+        const cabMain  = this._litColor([232, 236, 244], [32, 46, 78], ch, 0.20);
+        const cabSide  = this._litColor([198, 206, 222], [24, 36, 64], ch, 0.18);
+        const cabShelf = this._litColor([176, 186, 204], [19, 30, 54], ch, 0.16);
+        const cabBack  = this._litColor([194, 204, 220], [20, 31, 58], ch, 0.16);
+
+        this.px(162, 93, 46, 4, [12, 20, 40], 0.36 + ch.darkness * 0.28);
+
+        this.px(164, 26, 42, 68, cabMain);
+        this.px(164, 26, 3, 68, cabSide);
+        this.px(203, 26, 3, 68, cabSide);
+        this.px(164, 26, 42, 3, cabSide);
+
+        this.px(167, 29, 36, 14, cabBack);
+        this.px(167, 45, 36, 14, cabBack);
+        this.px(167, 61, 36, 14, cabBack);
+
+        this.px(167, 43, 36, 2, cabShelf);
+        this.px(167, 59, 36, 2, cabShelf);
+        this.px(167, 75, 36, 2, cabShelf);
+
+        this.px(167, 77, 17, 15, this._litColor([218, 224, 236], [28, 41, 70], ch, 0.18));
+        this.px(186, 77, 17, 15, this._litColor([218, 224, 236], [28, 41, 70], ch, 0.18));
+        this.px(184, 77, 2, 15, cabShelf);
+        this.px(181, 82, 1, 5, cabShelf);
+        this.px(188, 82, 1, 5, cabShelf);
+
+        this.px(169, 32, 4, 11, this._litColor([82, 134, 204], [42, 74, 128], ch, 0.12));
+        this.px(173, 34, 3, 9, this._litColor([232, 108, 102], [132, 58, 66], ch, 0.18));
+        this.px(176, 31, 4, 12, this._litColor([94, 178, 152], [44, 98, 96], ch, 0.12));
+        this.px(180, 35, 3, 8, this._litColor([244, 196, 92], [142, 108, 56], ch, 0.18));
+        this.px(184, 35, 3, 8, this._litColor([154, 124, 212], [72, 58, 124], ch, 0.14));
+        this.px(191, 33, 10, 10, this._litColor([118, 138, 168], [38, 54, 88], ch, 0.14));
+        this.px(194, 36, 4, 2, cabMain);
+
+        this.px(169, 49, 15, 10, this._litColor([238, 132, 62], [148, 76, 44], ch, 0.25));
+        this.px(169, 49, 15, 3, this._litColor([252, 164, 92], [176, 98, 56], ch, 0.25));
+        this.px(174, 54, 5, 2, this._litColor([255, 232, 198], [218, 164, 118], ch, 0.2));
+
+        this.px(187, 50, 14, 9, this._litColor([124, 138, 160], [34, 48, 78], ch, 0.15));
+        this.px(189, 51, 10, 3, this._litColor([178, 192, 214], [52, 70, 108], ch, 0.15));
+        this.px(190, 56, 8, 2, this._litColor([244, 246, 252], [96, 114, 148], ch, 0.12));
+        const ledBlink = reducedMotion ? 1 : (0.5 + 0.5 * Math.sin(animTime * 2.2));
+        this.px(199, 52, 1, 1, [88, 244, 156], 0.55 + 0.45 * ledBlink);
+
+        this.px(169, 65, 14, 10, this._litColor([198, 158, 114], [96, 74, 58], ch, 0.22));
+        this.px(170, 68, 12, 1, this._litColor([168, 128, 86], [76, 56, 44], ch, 0.2));
+        this.px(170, 71, 12, 1, this._litColor([168, 128, 86], [76, 56, 44], ch, 0.2));
+        this.px(186, 66, 15, 3, this._litColor([102, 148, 206], [46, 76, 124], ch, 0.12));
+        this.px(187, 69, 14, 3, this._litColor([228, 234, 244], [52, 68, 104], ch, 0.15));
+        this.px(186, 72, 15, 3, this._litColor([236, 128, 112], [116, 62, 68], ch, 0.15));
+
+        const potCol = this._litColor([212, 126, 86], [108, 62, 52], ch, 0.22);
+        const leafDark = this._litColor([58, 128, 88], [22, 56, 54], ch, 0.12);
+        const leafLight = this._litColor([102, 182, 118], [38, 86, 76], ch, 0.14);
+
+        this.px(190, 17, 11, 9, potCol);
+        this.px(188, 16, 15, 3, this._litColor([228, 148, 106], [122, 74, 62], ch, 0.22));
+
+        const sway = reducedMotion ? 0 : Math.round(Math.sin(animTime * 1.4) * 0.8);
+        this.px(187, 13, 6, 4, leafDark);
+        this.px(192, 10, 8, 6, leafLight);
+        this.px(199, 13, 6, 4, leafDark);
+        this.px(202 + sway, 18, 3, 6, leafLight);
+        this.px(204 + sway, 24, 3, 7, leafDark);
+        this.px(205 + sway, 31, 3, 6, leafLight);
+        this.px(206 + sway, 37, 2, 5, leafDark);
+        this.px(186 - sway, 18, 3, 6, leafLight);
+        this.px(184 - sway, 24, 3, 5, leafDark);
+      }
+
+      _drawWorkstationAndWorker(ch, animTime, transitionActivity, reducedMotion) {
+        this.px(72, 94, 86, 6, [10, 18, 38], 0.36 + ch.darkness * 0.28);
+
+        const deskTop   = this._litColor([118, 138, 166], [34, 49, 82], ch, 0.22);
+        const deskFront = this._litColor([84, 104, 134], [24, 36, 64], ch, 0.18);
+        const deskDark  = this._litColor([62, 78, 104], [16, 25, 46], ch, 0.15);
+
+        this.px(75, 72, 4, 25, deskDark);
+        this.px(81, 79, 9, 17, this._litColor([54, 64, 84], [16, 22, 40], ch, 0.12));
+        this.px(82, 81, 7, 2, this._litColor([72, 84, 108], [26, 36, 62], ch, 0.10));
+        const pcLed = reducedMotion ? 1 : (0.4 + 0.6 * Math.sin(animTime * 4.5));
+        this.px(83, 84, 2, 1, [92, 214, 255], 0.6 + 0.4 * ch.monitorEmission);
+        this.px(86, 84, 1, 1, [110, 248, 168], pcLed * 0.85);
+
+        this.px(134, 72, 21, 25, deskFront);
+        this.px(136, 74, 17, 6, deskTop);
+        this.px(136, 82, 17, 6, deskTop);
+        this.px(136, 90, 17, 6, deskTop);
+        this.px(143, 76, 3, 1, deskDark);
+        this.px(143, 84, 3, 1, deskDark);
+        this.px(143, 92, 3, 1, deskDark);
+
+        this.px(72, 69, 85, 4, deskTop);
+        this.px(72, 72, 85, 1, deskDark);
+        this.px(95, 69, 32, 1, deskDark);
+
+        const bezelCol = this._litColor([54, 64, 82], [16, 23, 42], ch, 0.10);
+        this.px(107, 64, 6, 4, bezelCol);
+        this.px(102, 67, 16, 2, bezelCol);
+        this.px(96, 45, 28, 19, bezelCol);
+        this.px(121, 63, 1, 1, [104, 232, 180], 0.85);
+
+        const codeBlend = MathUtils.smoothstep(0.20, 0.78, ch.monitorEmission);
+        const screenBg = MathUtils.lerpRGB([236, 242, 252], [15, 24, 48], codeBlend);
+        this.px(98, 47, 24, 15, screenBg);
+
+        if (codeBlend < 0.55) {
+          const uiA = MathUtils.clamp(1 - codeBlend * 1.8, 0, 1);
+          this.px(98, 47, 24, 3, [174, 194, 220], uiA);
+          this.px(98, 50, 6, 12, [208, 220, 236], uiA);
+          this.px(106, 52, 13, 1, [144, 164, 192], uiA);
+          this.px(106, 54, 10, 1, [164, 182, 206], uiA);
+          this.px(106, 56, 12, 1, [164, 182, 206], uiA);
+          this.px(106, 59, 4, 2, [108, 174, 238], uiA);
+          this.px(111, 58, 4, 3, [94, 196, 164], uiA);
+        }
+        if (codeBlend > 0.22) {
+          const cA = MathUtils.smoothstep(0.22, 0.70, codeBlend);
+          this.px(98, 47, 4, 15, [22, 34, 66], cA);
+          this.px(102, 47, 20, 2, [26, 40, 74], cA);
+          const typeLen = reducedMotion ? 6 : (2 + Math.floor((animTime * 4.5) % 8));
+          const cursorOn = reducedMotion ? 1 : (Math.sin(animTime * 7.5) > 0 ? 1 : 0);
+
+          this.px(104, 50, 4, 1, [246, 114, 186], cA);
+          this.px(109, 50, 8, 1, [104, 224, 255], cA);
+          this.px(105, 52, 6, 1, [255, 204, 106], cA);
+          this.px(112, 52, 7, 1, [154, 232, 188], cA);
+          this.px(105, 54, 9, 1, [118, 206, 255], cA);
+          this.px(115, 54, 4, 1, [250, 126, 192], cA);
+          this.px(104, 56, 5, 1, [255, 178, 92], cA);
+          this.px(110, 56, typeLen, 1, [132, 236, 255], cA);
+          if (cursorOn) {
+            this.px(110 + typeLen, 56, 1, 1, [255, 255, 255], cA);
+          }
+          this.px(98, 60, 24, 2, [46, 90, 174], cA);
+        }
+
+        this.px(99, 68, 16, 1, this._litColor([184, 194, 212], [58, 76, 116], ch, 0.1));
+        this.px(118, 68, 3, 1, this._litColor([196, 206, 222], [70, 88, 128], ch, 0.1));
+        this.px(124, 68, 7, 1, this._litColor([246, 244, 236], [88, 94, 118], ch, 0.18));
+
+        this.px(80, 64, 5, 5, this._litColor([246, 248, 252], [82, 98, 134], ch, 0.18));
+        this.px(85, 65, 1, 3, this._litColor([210, 218, 230], [58, 72, 104], ch, 0.15));
+        this.px(81, 64, 3, 1, this._litColor([136, 92, 66], [68, 44, 36], ch, 0.15));
+        if (!reducedMotion) {
+          const s1 = Math.floor((animTime * 2.2) % 5);
+          const s2 = Math.floor((animTime * 2.2 + 2.5) % 5);
+          const steamCol = this._litColor([255, 255, 255], [176, 200, 238], ch, 0.1);
+          this.px(81 + (s1 % 2), 62 - s1, 1, 1, steamCol, 0.45 * (1 - s1 / 5));
+          this.px(83 - (s2 % 2), 62 - s2, 1, 1, steamCol, 0.40 * (1 - s2 / 5));
+        }
+
+        const lampMetal = this._litColor([72, 86, 112], [38, 48, 76], ch, 0.15);
+        const lampShade = this._litColor([94, 110, 138], [58, 66, 94], ch, 0.2);
+        this.px(139, 68, 10, 1, lampMetal);
+        this.px(141, 66, 6, 2, lampMetal);
+        this.px(143, 58, 2, 8, lampMetal);
+        this.px(141, 55, 3, 3, lampMetal);
+        this.px(138, 52, 3, 3, lampMetal);
+        this.px(132, 50, 9, 4, lampShade);
+        this.px(130, 53, 9, 3, lampMetal);
+
+        if (ch.deskLampEmission > 0.03) {
+          this.px(130, 56, 8, 2, [255, 240, 168], MathUtils.clamp(ch.deskLampEmission * 1.1, 0, 1));
+          this.px(132, 55, 5, 1, [255, 250, 224], MathUtils.clamp(ch.deskLampEmission, 0, 1));
+        }
+
+        const isNightFocus = ch.darkness > 0.45;
+        const typeCycle = reducedMotion ? 0 : Math.floor(animTime * (isNightFocus ? 6.5 : 3.8)) % 4;
+        const headBob = reducedMotion ? 0 : (Math.sin(animTime * 1.9) > 0.80 ? 1 : 0);
+        const blink = !reducedMotion && ((animTime % 4.3) > 4.16);
+        const leanX = (transitionActivity > 0.15 || isNightFocus) ? 2 : 0;
+
+        const hairCol  = this._litColor([38, 42, 58], [16, 20, 36], ch, 0.1);
+        const skinCol  = this._litColor([242, 202, 176], [150, 120, 114], ch, 0.25);
+        const shirtCol = this._litColor([232, 237, 246], [86, 104, 142], ch, 0.20);
+        const shirtShd = this._litColor([204, 212, 228], [62, 78, 112], ch, 0.18);
+        const pantsCol = this._litColor([56, 70, 96], [22, 32, 56], ch, 0.15);
+
+        const wx = 98 + leanX;
+        this.px(wx + 2, 78, 4, 14, pantsCol);
+        this.px(wx + 8, 78, 4, 14, pantsCol);
+        this.px(wx + 2, 92, 6, 3, hairCol);
+        this.px(wx + 8, 92, 6, 3, hairCol);
+
+        this.px(wx + 1, 65, 11, 14, shirtCol);
+        this.px(wx + 1, 65, 3, 14, shirtShd);
+        if (ch.monitorEmission > 0.32) {
+          this.px(wx + 9, 65, 3, 9, [130, 183, 255], (ch.monitorEmission - 0.32) * 0.45);
+        }
+
+        const leftArmY = (typeCycle === 0 || typeCycle === 2) ? 67 : 68;
+        const rightArmY = (typeCycle === 1 || typeCycle === 3) ? 67 : 68;
+        this.px(wx + 9, leftArmY, 6, 3, shirtCol);
+        this.px(wx + 14, leftArmY, 3, 2, skinCol);
+        this.px(wx + 6, rightArmY + 2, 6, 3, shirtShd);
+
+        const hy = 53 + headBob;
+        this.px(wx + 3, hy + 3, 9, 9, skinCol);
+        this.px(wx + 2, hy, 10, 4, hairCol);
+        this.px(wx + 1, hy + 2, 3, 7, hairCol);
+        this.px(wx + 4, hy + 3, 4, 1, hairCol);
+        if (!blink) {
+          this.px(wx + 9, hy + 6, 2, 2, hairCol);
+        } else {
+          this.px(wx + 9, hy + 7, 2, 1, hairCol);
+        }
+
+        const chairFrame = this._litColor([46, 54, 72], [15, 21, 36], ch, 0.1);
+        const chairMesh  = this._litColor([144, 158, 182], [44, 58, 88], ch, 0.15);
+
+        this.px(97, 83, 3, 11, chairFrame);
+        this.px(90, 93, 18, 3, chairFrame);
+        this.px(90, 96, 3, 2, chairFrame);
+        this.px(105, 96, 3, 2, chairFrame);
+        this.px(91, 80, 17, 4, chairFrame);
+        this.px(89, 61, 5, 20, chairFrame);
+        this.px(91, 63, 3, 15, chairMesh);
+        this.px(93, 74, 9, 2, chairFrame);
+      }
+
+      _drawLocalLightSources(ch, animTime, reducedMotion) {
+        const ctx = this.ctx;
+
+        if (ch.monitorEmission > 0.25) {
+          const mAlpha = (ch.monitorEmission - 0.25) * 0.44;
+          const grad = ctx.createRadialGradient(110, 55, 3, 110, 57, 34);
+          grad.addColorStop(0, `rgba(130, 183, 255, ${(mAlpha * 1.12).toFixed(3)})`);
+          grad.addColorStop(0.5, `rgba(92, 148, 240, ${(mAlpha * 0.46).toFixed(3)})`);
+          grad.addColorStop(1, 'rgba(92, 148, 240, 0)');
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.fillStyle = grad;
+          ctx.fillRect(72, 22, 80, 68);
+          ctx.restore();
+        }
+
+        if (ch.deskLampEmission > 0.02) {
+          const e = ch.deskLampEmission;
+          const shimmer = 0.985 + 0.015 * Math.sin(animTime * 3.1);
+          const intensity = e * shimmer;
+
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+
+          const outerGrad = ctx.createRadialGradient(134, 61, 3, 134, 66, 52);
+          outerGrad.addColorStop(0.00, `rgba(255, 240, 168, ${(0.84 * intensity).toFixed(3)})`);
+          outerGrad.addColorStop(0.24, `rgba(255, 214, 111, ${(0.56 * intensity).toFixed(3)})`);
+          outerGrad.addColorStop(0.54, `rgba(245, 173, 72, ${(0.25 * intensity).toFixed(3)})`);
+          outerGrad.addColorStop(0.84, `rgba(224, 128, 44, ${(0.08 * intensity).toFixed(3)})`);
+          outerGrad.addColorStop(1.00, 'rgba(224, 128, 44, 0)');
+          ctx.fillStyle = outerGrad;
+          ctx.fillRect(78, 20, 118, 98);
+
+          const coneGrad = ctx.createRadialGradient(134, 68, 2, 134, 68, 17);
+          coneGrad.addColorStop(0, `rgba(255, 244, 196, ${(0.78 * intensity).toFixed(3)})`);
+          coneGrad.addColorStop(0.55, `rgba(255, 214, 111, ${(0.38 * intensity).toFixed(3)})`);
+          coneGrad.addColorStop(1, 'rgba(245, 173, 72, 0)');
+          ctx.fillStyle = coneGrad;
+          ctx.fillRect(114, 52, 40, 32);
+
+          ctx.restore();
+
+          if (!reducedMotion && e > 0.35) {
+            const moteA = MathUtils.smoothstep(0.35, 0.9, e) * 0.65;
+            for (const m of this.dustMotes) {
+              const mx = m.bx + Math.sin(animTime * m.speed + m.phase) * 4;
+              const my = m.by + Math.cos(animTime * m.speed * 0.7 + m.phase) * 3;
+              this.px(mx, my, 1, 1, [255, 242, 192], moteA);
+            }
+          }
+        }
+      }
+    }
+
+    /* =========================================================================
+       5. LIQUID GLASS LENS RENDERER (PHYSICALLY INSPIRED WEBGL REFRACTION)
+       ========================================================================= */
+    class LiquidGlassRenderer {
+      constructor(displayCanvas, scene) {
+        this.canvas = displayCanvas;
+        this.scene = scene;
+        this.mode = 'webgl';
+        this.gl = null;
+        this.ctx2d = null;
+        this.program = null;
+        this.texture = null;
+        this.uniforms = {};
+        this.disposed = false;
+
+        this._initContext();
+      }
+
+      _initContext() {
+        try {
+          const gl = this.canvas.getContext('webgl', {
+            alpha: false,
+            antialias: true,
+            powerPreference: 'high-performance',
+            preserveDrawingBuffer: true
+          });
+          if (gl) {
+            this.gl = gl;
+            this.mode = 'webgl';
+            this._setupWebGL(gl);
+            return;
+          }
+        } catch (err) {
+          // Fall back to Canvas2D refraction below
+        }
+        this.mode = 'canvas2d';
+        this.ctx2d = this.canvas.getContext('2d', { alpha: false });
+      }
+
+      _compileShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const log = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error('Shader compile failed: ' + log);
+        }
+        return shader;
+      }
+
+      _setupWebGL(gl) {
+        const vsSource = `
+          attribute vec2 aPos;
+          varying vec2 vUv;
+          void main() {
+            vUv = vec2(aPos.x * 0.5 + 0.5, 0.5 - aPos.y * 0.5);
+            gl_Position = vec4(aPos, 0.0, 1.0);
+          }
+        `;
+
+        const fsSource = `
+          precision highp float;
+          varying vec2 vUv;
+
+          uniform sampler2D uScene;
+          uniform vec2 uResolution;
+          uniform vec2 uSceneSize;
+          uniform float uLensX;
+          uniform float uLensRadius;
+          uniform float uStretchX;
+          uniform float uVelocity;
+          uniform float uGlassReflect;
+          uniform float uDarkness;
+          uniform float uLampEmission;
+          uniform float uSunsetWarmth;
+          uniform float uSunriseWarmth;
+
+          vec3 samplePixel(vec2 uv) {
+            vec2 clamped = clamp(uv, vec2(0.002), vec2(0.998));
+            vec2 snapped = (floor(clamped * uSceneSize) + 0.5) / uSceneSize;
+            return texture2D(uScene, snapped).rgb;
+          }
+
+          vec3 sampleOptical(vec2 uv, float softness) {
+            vec3 crisp = samplePixel(uv);
+            vec3 linear = texture2D(uScene, clamp(uv, vec2(0.002), vec2(0.998))).rgb;
+            return mix(crisp, linear, softness);
+          }
+
+          void main() {
+            float aspect = uResolution.x / max(uResolution.y, 1.0);
+            vec2 lensCenter = vec2(uLensX, 0.5);
+
+            vec2 rel = vec2((vUv.x - lensCenter.x) * aspect, vUv.y - lensCenter.y);
+            vec2 relStretched = vec2(rel.x / uStretchX, rel.y);
+            float dist = length(relStretched);
+            float rNorm = dist / uLensRadius;
+
+            vec3 baseColor = samplePixel(vUv);
+
+            vec2 shadowRel = vec2(((vUv.x - lensCenter.x) * aspect - 0.012) / uStretchX, (vUv.y - lensCenter.y) - 0.032);
+            float shadowDist = length(shadowRel) / uLensRadius;
+            if (rNorm >= 1.0) {
+              float castShadow = (1.0 - smoothstep(0.96, 1.24, shadowDist)) * (0.28 + uDarkness * 0.24);
+              float causticSpot = (1.0 - smoothstep(0.98, 1.16, shadowDist)) * smoothstep(0.86, 1.02, shadowDist);
+              vec3 causticTint = mix(vec3(0.92, 0.96, 1.0), vec3(0.62, 0.78, 1.0), uDarkness);
+              baseColor = baseColor * (1.0 - castShadow) + causticTint * causticSpot * (0.14 * (1.0 - uDarkness * 0.55));
+              gl_FragColor = vec4(baseColor, 1.0);
+              return;
+            }
+
+            vec2 dir = dist > 0.0001 ? (relStretched / dist) : vec2(0.0);
+            float z = sqrt(max(0.001, 1.0 - rNorm * rNorm));
+            vec3 normal = normalize(vec3(relStretched / uLensRadius, z * 0.82));
+
+            float centerMag = 0.83;
+            float rimWrap = pow(smoothstep(0.58, 1.0, rNorm), 2.15) * 0.46;
+            float radialScale = mix(centerMag, 0.42, rimWrap);
+
+            vec2 refractedRel = relStretched * radialScale;
+            vec2 edgePull = -normal.xy * pow(rNorm, 3.2) * uLensRadius * 0.16;
+            vec2 refractedUv = lensCenter + vec2((refractedRel.x + edgePull.x) * uStretchX / aspect, refractedRel.y + edgePull.y);
+
+            float caStrength = pow(rNorm, 3.0) * 0.011 * (0.85 + 0.35 * uGlassReflect);
+            vec2 caOffset = vec2(dir.x / aspect, dir.y) * caStrength;
+            float edgeSoft = smoothstep(0.76, 1.0, rNorm) * 0.45;
+
+            float colR = sampleOptical(refractedUv + caOffset, edgeSoft).r;
+            float colG = sampleOptical(refractedUv, edgeSoft * 0.5).g;
+            float colB = sampleOptical(refractedUv - caOffset, edgeSoft).b;
+            vec3 glassColor = vec3(colR, colG, colB);
+
+            vec3 dayGlassTint = vec3(0.95, 0.98, 1.0);
+            vec3 nightGlassTint = vec3(0.76, 0.85, 1.0);
+            vec3 volumeTint = mix(dayGlassTint, nightGlassTint, uDarkness);
+            float thicknessShade = smoothstep(0.72, 1.0, rNorm) * (0.14 + uDarkness * 0.14);
+            glassColor = glassColor * mix(vec3(1.0), volumeTint, 0.18 + rNorm * 0.25) * (1.0 - thicknessShade);
+
+            float fresnel = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.8);
+            vec3 envReflectCol = mix(vec3(0.92, 0.96, 1.0), vec3(0.42, 0.56, 0.92), uDarkness);
+            if (uSunsetWarmth > 0.02) {
+              envReflectCol = mix(envReflectCol, vec3(1.0, 0.78, 0.54), uSunsetWarmth * 0.45);
+            }
+            if (uSunriseWarmth > 0.02) {
+              envReflectCol = mix(envReflectCol, vec3(1.0, 0.82, 0.76), uSunriseWarmth * 0.42);
+            }
+            glassColor += envReflectCol * fresnel * (0.42 * uGlassReflect + 0.12);
+
+            vec2 lightDirTop = normalize(vec3(-0.24 - uVelocity * 0.08, -0.78, 0.68)).xy;
+            float topCrescent = smoothstep(0.78, 0.96, dot(normalize(relStretched + vec2(0.0001)), lightDirTop))
+                              * smoothstep(0.62, 0.88, rNorm)
+                              * (1.0 - smoothstep(0.93, 0.995, rNorm));
+            glassColor += vec3(1.0, 0.99, 1.0) * topCrescent * (0.62 * uGlassReflect + 0.14);
+
+            vec2 domePos = (relStretched / uLensRadius) - vec2(-0.14 - uVelocity * 0.04, -0.44);
+            float upperDome = exp(-dot(domePos * vec2(1.4, 2.6), domePos * vec2(1.4, 2.6)) * 5.2);
+            glassColor += vec3(0.96, 0.98, 1.0) * upperDome * (0.20 * uGlassReflect + 0.04);
+
+            vec2 lightDirBot = normalize(vec2(0.18, 0.86));
+            float botArc = smoothstep(0.70, 0.95, dot(normalize(relStretched + vec2(0.0001)), lightDirBot))
+                         * smoothstep(0.72, 0.92, rNorm)
+                         * (1.0 - smoothstep(0.95, 1.0, rNorm));
+            vec3 botCol = mix(vec3(0.86, 0.94, 1.0), vec3(0.48, 0.66, 1.0), uDarkness);
+            glassColor += botCol * botArc * (0.44 * uGlassReflect + 0.14);
+
+            if (uLampEmission > 0.02) {
+              float lampScreenX = 134.0 / 222.0;
+              float lampDelta = clamp((lampScreenX - uLensX) * 2.2, -0.7, 0.7);
+              vec2 lampReflPos = (relStretched / uLensRadius) - vec2(lampDelta * 0.65, 0.18);
+              float lampGlint = exp(-dot(lampReflPos, lampReflPos) * 7.0) * smoothstep(0.25, 0.95, rNorm);
+              glassColor += vec3(1.0, 0.82, 0.44) * lampGlint * uLampEmission * 0.36;
+            }
+
+            float rimLine = smoothstep(0.945, 0.982, rNorm) * (1.0 - smoothstep(0.985, 1.0, rNorm));
+            vec3 rimCol = mix(vec3(1.0, 1.0, 1.0), vec3(0.64, 0.78, 1.0), uDarkness);
+            glassColor += rimCol * rimLine * (0.58 * uGlassReflect + 0.20);
+
+            float aaEdge = 1.0 - smoothstep(0.982, 1.0, rNorm);
+            vec3 finalColor = mix(baseColor, glassColor, aaEdge);
+            gl_FragColor = vec4(finalColor, 1.0);
+          }
+        `;
+
+        const vs = this._compileShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fs = this._compileShader(gl, gl.FRAGMENT_SHADER, fsSource);
+        const prog = gl.createProgram();
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+          throw new Error('Program link failed: ' + gl.getProgramInfoLog(prog));
+        }
+
+        this.program = prog;
+        gl.useProgram(prog);
+
+        const quad = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+        const buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+        const aPos = gl.getAttribLocation(prog, 'aPos');
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+        this.vertexBuffer = buf;
+
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        this.texture = tex;
+
+        this.uniforms = {
+          uScene: gl.getUniformLocation(prog, 'uScene'),
+          uResolution: gl.getUniformLocation(prog, 'uResolution'),
+          uSceneSize: gl.getUniformLocation(prog, 'uSceneSize'),
+          uLensX: gl.getUniformLocation(prog, 'uLensX'),
+          uLensRadius: gl.getUniformLocation(prog, 'uLensRadius'),
+          uStretchX: gl.getUniformLocation(prog, 'uStretchX'),
+          uVelocity: gl.getUniformLocation(prog, 'uVelocity'),
+          uGlassReflect: gl.getUniformLocation(prog, 'uGlassReflect'),
+          uDarkness: gl.getUniformLocation(prog, 'uDarkness'),
+          uLampEmission: gl.getUniformLocation(prog, 'uLampEmission'),
+          uSunsetWarmth: gl.getUniformLocation(prog, 'uSunsetWarmth'),
+          uSunriseWarmth: gl.getUniformLocation(prog, 'uSunriseWarmth')
+        };
+      }
+
+      resize(cssWidth, cssHeight) {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const w = Math.max(1, Math.round(cssWidth * dpr));
+        const h = Math.max(1, Math.round(cssHeight * dpr));
+        if (this.canvas.width !== w || this.canvas.height !== h) {
+          this.canvas.width = w;
+          this.canvas.height = h;
+        }
+        if (this.gl) {
+          this.gl.viewport(0, 0, w, h);
+        }
+      }
+
+      render(state) {
+        if (this.disposed) return;
+        const { lensProgress, stretchX, velocity, channels } = state;
+
+        const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
+        const radiusV = 0.42;
+        const marginX = (radiusV + 0.055) / aspect;
+        const lensX = MathUtils.lerp(marginX, 1.0 - marginX, lensProgress);
+
+        if (this.mode === 'webgl' && this.gl) {
+          const gl = this.gl;
+          gl.useProgram(this.program);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, this.texture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.scene.canvas);
+
+          gl.uniform1i(this.uniforms.uScene, 0);
+          gl.uniform2f(this.uniforms.uResolution, this.canvas.width, this.canvas.height);
+          gl.uniform2f(this.uniforms.uSceneSize, this.scene.width, this.scene.height);
+          gl.uniform1f(this.uniforms.uLensX, lensX);
+          gl.uniform1f(this.uniforms.uLensRadius, radiusV);
+          gl.uniform1f(this.uniforms.uStretchX, stretchX);
+          gl.uniform1f(this.uniforms.uVelocity, velocity);
+          gl.uniform1f(this.uniforms.uGlassReflect, channels.glassReflectionIntensity);
+          gl.uniform1f(this.uniforms.uDarkness, channels.darkness);
+          gl.uniform1f(this.uniforms.uLampEmission, channels.deskLampEmission);
+          gl.uniform1f(this.uniforms.uSunsetWarmth, channels.sunsetWarmth);
+          gl.uniform1f(this.uniforms.uSunriseWarmth, channels.sunriseWarmth);
+
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        } else if (this.ctx2d) {
+          this._render2DFallback(lensX, radiusV, stretchX, channels);
+        }
+      }
+
+      _render2DFallback(lensX, radiusV, stretchX, ch) {
+        const ctx = this.ctx2d;
+        const W = this.canvas.width;
+        const H = this.canvas.height;
+
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(this.scene.canvas, 0, 0, W, H);
+
+        const cx = lensX * W;
+        const cy = H * 0.5;
+        const r = radiusV * H;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(cx + 3, cy + 7, r * stretchX * 1.03, r * 1.03, 0, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(8, 14, 32, ${(0.22 + ch.darkness * 0.24).toFixed(3)})`;
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, r * stretchX, r, 0, 0, Math.PI * 2);
+        ctx.clip();
+
+        const mag = 1.24;
+        const srcW = (r * 2 / W) * this.scene.width / mag;
+        const srcH = (r * 2 / H) * this.scene.height / mag;
+        const srcX = MathUtils.clamp(lensX * this.scene.width - srcW * 0.5, 0, this.scene.width - srcW);
+        const srcY = MathUtils.clamp(0.5 * this.scene.height - srcH * 0.5, 0, this.scene.height - srcH);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(this.scene.canvas, srcX, srcY, srcW, srcH, cx - r * stretchX, cy - r, r * 2 * stretchX, r * 2);
+
+        const rimGrad = ctx.createRadialGradient(cx, cy, r * 0.62, cx, cy, r);
+        rimGrad.addColorStop(0, 'rgba(255,255,255,0)');
+        rimGrad.addColorStop(0.82, `rgba(210,232,255,${(0.18 * ch.glassReflectionIntensity).toFixed(3)})`);
+        rimGrad.addColorStop(1, `rgba(255,255,255,${(0.55 * ch.glassReflectionIntensity + 0.15).toFixed(3)})`);
+        ctx.fillStyle = rimGrad;
+        ctx.fillRect(cx - r * stretchX, cy - r, r * 2 * stretchX, r * 2);
+
+        ctx.beginPath();
+        ctx.ellipse(cx - r * 0.12, cy - r * 0.52, r * 0.52, r * 0.18, -0.18, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${(0.32 * ch.glassReflectionIntensity + 0.08).toFixed(3)})`;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      dispose() {
+        this.disposed = true;
+        if (this.gl) {
+          if (this.texture) this.gl.deleteTexture(this.texture);
+          if (this.vertexBuffer) this.gl.deleteBuffer(this.vertexBuffer);
+          if (this.program) this.gl.deleteProgram(this.program);
+        }
+      }
+    }
+
+    /* =========================================================================
+       6. THEME CONTROLLER (DOM, CSS VARIABLES, STORAGE & SYSTEM PREFERENCE SYNC)
+       ========================================================================= */
+    class ThemeController {
+      constructor(onExternalChange) {
+        this.storageKey = 'cinematic-toggle-theme';
+        this.onExternalChange = onExternalChange || (() => {});
+        this.theme = this._readInitialTheme();
+        this._applyToDOM(this.theme);
+
+        this._mediaQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+        this._onMediaChange = (e) => {
+          try {
+            if (!localStorage.getItem(this.storageKey)) {
+              const next = e.matches ? 'dark' : 'light';
+              this.setTheme(next, false);
+              this.onExternalChange(next);
+            }
+          } catch (_) {}
+        };
+        if (this._mediaQuery && this._mediaQuery.addEventListener) {
+          this._mediaQuery.addEventListener('change', this._onMediaChange);
+        }
+
+        this._onStorage = (e) => {
+          if (e.key === this.storageKey && (e.newValue === 'light' || e.newValue === 'dark')) {
+            this.setTheme(e.newValue, false);
+            this.onExternalChange(e.newValue);
+          }
+        };
+        window.addEventListener('storage', this._onStorage);
+      }
+
+      _readInitialTheme() {
+        const attr = document.documentElement.getAttribute('data-theme');
+        if (attr === 'light' || attr === 'dark') return attr;
+        try {
+          const saved = localStorage.getItem(this.storageKey);
+          if (saved === 'light' || saved === 'dark') return saved;
+        } catch (_) {}
+        return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+
+      _applyToDOM(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+      }
+
+      setTheme(theme, persist = true) {
+        if (theme !== 'light' && theme !== 'dark') return;
+        this.theme = theme;
+        this._applyToDOM(theme);
+        if (persist) {
+          try {
+            localStorage.setItem(this.storageKey, theme);
+          } catch (_) {}
+        }
+      }
+
+      destroy() {
+        if (this._mediaQuery && this._mediaQuery.removeEventListener) {
+          this._mediaQuery.removeEventListener('change', this._onMediaChange);
+        }
+        window.removeEventListener('storage', this._onStorage);
+      }
+    }
+
+    /* =========================================================================
+       7. CINEMATIC THEME TOGGLE (AUTHORITATIVE STATE MACHINE, DRAG, A11Y, rAF)
+       ========================================================================= */
+    class CinematicThemeToggle {
+      constructor(options) {
+        this.buttonEl = options.buttonEl;
+        this.canvasEl = options.canvasEl;
+        this.srStatusEl = options.srStatusEl;
+        this.audio = options.audio || null;
+        this.onThemeChange = options.onThemeChange || (() => {});
+        this.onTelemetry = options.onTelemetry || (() => {});
+        this.onAfterRender = options.onAfterRender || null;
+
+        this.animationDuration = options.animationDuration || 1400;
+        this.enableDrag = options.enableDrag !== false;
+        this.reducedMotionSetting = options.reducedMotion !== undefined ? options.reducedMotion : 'system';
+        this.disabled = Boolean(options.disabled);
+
+        this.theme = options.initialTheme === 'dark' ? 'dark' : 'light';
+        this.phase = this.theme === 'dark' ? 'idle_night' : 'idle_day';
+        this.lensProgress = this.theme === 'dark' ? 1.0 : 0.0;
+        this.lensVelocity = 0.0;
+
+        this.lighting = new LightingEngine();
+        this.channels = this.lighting.getRestingChannels(this.theme);
+        this.scene = new PixelOfficeScene();
+        this.renderer = new LiquidGlassRenderer(this.canvasEl, this.scene);
+
+        this.transition = null;
+        this.dragState = null;
+
+        this._rafId = null;
+        this._lastFrameTime = performance.now();
+        this._frameTimeMs = 16.6;
+        this._animTime = 0;
+        this._isPageHidden = document.hidden;
+
+        this._syncAria();
+        this._syncHousingCSS(this.channels);
+        this._bindEvents();
+        this._handleResize();
+        this._startLoop();
+      }
+
+      isReducedMotion() {
+        if (this.reducedMotionSetting === true) return true;
+        if (this.reducedMotionSetting === false) return false;
+        return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      }
+
+      setSize(sizeName) {
+        const sizes = {
+          small:  { w: '180px', h: '98px' },
+          medium: { w: '340px', h: '184px' },
+          large:  { w: '440px', h: '238px' }
+        };
+        const s = sizes[sizeName] || sizes.large;
+        document.documentElement.style.setProperty('--toggle-width', s.w);
+        document.documentElement.style.setProperty('--toggle-height', s.h);
+        requestAnimationFrame(() => this._handleResize());
+      }
+
+      setDisabled(isDisabled) {
+        this.disabled = Boolean(isDisabled);
+        this.buttonEl.setAttribute('aria-disabled', String(this.disabled));
+      }
+
+      toggle() {
+        if (this.disabled) return;
+        const next = this.theme === 'dark' ? 'light' : 'dark';
+        this.transitionTo(next, true);
+      }
+
+      scrubLens(nextProgress, forwardTimeline = 'day_to_night') {
+        this.transition = null;
+        const clamped = MathUtils.clamp(nextProgress, 0, 1);
+        this.lensVelocity = MathUtils.clamp((clamped - this.lensProgress) * 18, -1.4, 1.4);
+        this.lensProgress = clamped;
+        this.phase = forwardTimeline;
+        this.channels = forwardTimeline === 'day_to_night'
+          ? this.lighting.evaluateDayToNight(clamped)
+          : this.lighting.evaluateNightToNextDay(1 - clamped);
+        this._syncHousingCSS(this.channels);
+      }
+
+      transitionTo(targetTheme, emitChange = true) {
+        if (targetTheme !== 'light' && targetTheme !== 'dark') return;
+        this.theme = targetTheme;
+        this._syncAria();
+
+        if (emitChange) {
+          this.onThemeChange(targetTheme);
+        }
+
+        if (this.isReducedMotion()) {
+          this.transition = null;
+          this.lensProgress = targetTheme === 'dark' ? 1.0 : 0.0;
+          this.lensVelocity = 0.0;
+          this.phase = targetTheme === 'dark' ? 'idle_night' : 'idle_day';
+          this.channels = this.lighting.getRestingChannels(targetTheme);
+          this._syncHousingCSS(this.channels);
+          return;
+        }
+
+        const timeline = targetTheme === 'dark' ? 'day_to_night' : 'night_to_next_day';
+        this.phase = timeline;
+
+        this.transition = {
+          startTime: performance.now(),
+          duration: this.animationDuration,
+          timeline,
+          fromLens: this.lensProgress,
+          toLens: targetTheme === 'dark' ? 1.0 : 0.0,
+          fromChannels: { ...this.channels },
+          targetTheme,
+          snapped: false
+        };
+      }
+
+      _syncAria() {
+        const isDark = this.theme === 'dark';
+        this.buttonEl.setAttribute('aria-checked', String(isDark));
+        if (this.srStatusEl) {
+          this.srStatusEl.textContent = isDark ? 'Dark theme enabled' : 'Light theme enabled';
+        }
+      }
+
+      _syncHousingCSS(ch) {
+        const rootStyle = document.documentElement.style;
+        rootStyle.setProperty('--night-mix', ch.darkness.toFixed(3));
+        rootStyle.setProperty('--frame-reflect', ch.frameReflectionIntensity.toFixed(3));
+      }
+
+      _bindEvents() {
+        this._onKeyDown = (e) => {
+          if (this.disabled) return;
+          if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            if (this.audio) this.audio.playClick(true);
+            this.toggle();
+          }
+        };
+        this.buttonEl.addEventListener('keydown', this._onKeyDown);
+
+        this._onPointerDown = (e) => {
+          if (this.disabled || (e.pointerType === 'mouse' && e.button !== 0)) return;
+          if (this.audio) this.audio.playClick(true);
+          if (!this.enableDrag) {
+            this.toggle();
+            return;
+          }
+          this.buttonEl.setPointerCapture(e.pointerId);
+          const rect = this.buttonEl.getBoundingClientRect();
+          this.dragState = {
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startProgress: this.lensProgress,
+            moved: false,
+            rect,
+            direction: this.theme === 'light' ? 'day_to_night' : 'night_to_next_day'
+          };
+        };
+
+        this._onPointerMove = (e) => {
+          if (!this.dragState || e.pointerId !== this.dragState.pointerId) return;
+          const dx = e.clientX - this.dragState.startX;
+          if (!this.dragState.moved && Math.abs(dx) > 6) {
+            this.dragState.moved = true;
+            this.transition = null;
+          }
+          if (!this.dragState.moved) return;
+
+          const travelPx = Math.max(40, this.dragState.rect.width * 0.52);
+          const next = MathUtils.clamp(this.dragState.startProgress + dx / travelPx, 0, 1);
+          this.lensVelocity = MathUtils.clamp((next - this.lensProgress) * 16, -1.5, 1.5);
+          this.lensProgress = next;
+
+          const dir = this.dragState.direction;
+          this.phase = dir;
+          this.channels = dir === 'day_to_night'
+            ? this.lighting.evaluateDayToNight(next)
+            : this.lighting.evaluateNightToNextDay(1.0 - next);
+          this._syncHousingCSS(this.channels);
+        };
+
+        this._onPointerUp = (e) => {
+          if (!this.dragState || e.pointerId !== this.dragState.pointerId) return;
+          const wasDrag = this.dragState.moved;
+          this.dragState = null;
+          if (this.buttonEl.hasPointerCapture(e.pointerId)) {
+            this.buttonEl.releasePointerCapture(e.pointerId);
+          }
+          if (!wasDrag) {
+            this.toggle();
+          } else {
+            if (this.audio) this.audio.playClick(false);
+            const target = this.lensProgress >= 0.5 ? 'dark' : 'light';
+            this.transitionTo(target, true);
+          }
+        };
+
+        this._onPointerCancel = (e) => {
+          if (!this.dragState || e.pointerId !== this.dragState.pointerId) return;
+          this.dragState = null;
+          this.transitionTo(this.theme, false);
+        };
+
+        this.buttonEl.addEventListener('pointerdown', this._onPointerDown);
+        this.buttonEl.addEventListener('pointermove', this._onPointerMove);
+        this.buttonEl.addEventListener('pointerup', this._onPointerUp);
+        this.buttonEl.addEventListener('pointercancel', this._onPointerCancel);
+
+        this._onResize = () => this._handleResize();
+        window.addEventListener('resize', this._onResize);
+
+        if (typeof ResizeObserver !== 'undefined') {
+          this._resizeObserver = new ResizeObserver(() => this._handleResize());
+          this._resizeObserver.observe(this.canvasEl);
+        }
+
+        this._onVisibility = () => {
+          this._isPageHidden = document.hidden;
+          if (!document.hidden) {
+            this._lastFrameTime = performance.now();
+          }
+        };
+        document.addEventListener('visibilitychange', this._onVisibility);
+      }
+
+      _handleResize() {
+        const rect = this.canvasEl.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          this.renderer.resize(rect.width, rect.height);
+        }
+      }
+
+      _startLoop() {
+        const step = (now) => {
+          this._rafId = requestAnimationFrame(step);
+          if (this._isPageHidden) return;
+
+          const dtMs = Math.min(64, Math.max(1, now - this._lastFrameTime));
+          this._lastFrameTime = now;
+          this._frameTimeMs = this._frameTimeMs * 0.9 + dtMs * 0.1;
+          this._animTime += dtMs / 1000;
+
+          this._update(now, dtMs / 1000);
+          this._renderFrame(now);
+        };
+        this._rafId = requestAnimationFrame(step);
+      }
+
+      _update(now, dtSec) {
+        if (this.transition) {
+          const tr = this.transition;
+          const rawP = MathUtils.clamp((now - tr.startTime) / tr.duration, 0, 1);
+
+          const lensRaw = MathUtils.clamp(rawP / 0.78, 0, 1);
+          const easedLens = MathUtils.easeLens(lensRaw);
+          const nextLens = MathUtils.clamp(MathUtils.lerp(tr.fromLens, tr.toLens, easedLens), 0, 1);
+          this.lensVelocity = (nextLens - this.lensProgress) / Math.max(0.008, dtSec) * 0.25;
+          this.lensProgress = nextLens;
+
+          if (!tr.snapped && lensRaw >= 0.96) {
+            tr.snapped = true;
+            if (this.audio) this.audio.playSnap(tr.targetTheme === 'dark');
+          }
+
+          const targetCh = tr.timeline === 'day_to_night'
+            ? this.lighting.evaluateDayToNight(rawP)
+            : this.lighting.evaluateNightToNextDay(rawP);
+          const blendIn = MathUtils.smoothstep(0.0, 0.22, rawP);
+          this.channels = this.lighting.blendChannels(tr.fromChannels, targetCh, blendIn);
+          this._syncHousingCSS(this.channels);
+
+          if (rawP >= 1.0) {
+            this.lensProgress = tr.toLens;
+            this.lensVelocity = 0.0;
+            this.phase = tr.targetTheme === 'dark' ? 'idle_night' : 'idle_day';
+            this.channels = this.lighting.getRestingChannels(tr.targetTheme);
+            this._syncHousingCSS(this.channels);
+            this.transition = null;
+          }
+        } else if (!this.dragState) {
+          this.lensVelocity *= 0.85;
+        }
+
+        if (this.audio) {
+          this.audio.updateContinuous(this.lensVelocity, this.channels, this._animTime, this.isReducedMotion());
+        }
+      }
+
+      _renderFrame(now) {
+        const rawP = this.transition
+          ? MathUtils.clamp((now - this.transition.startTime) / this.transition.duration, 0, 1)
+          : (this.theme === 'dark' ? 1 : 0);
+
+        let logicalHours = 10.5;
+        if (this.phase === 'idle_day') logicalHours = 10.5 + (this._animTime * 0.002);
+        else if (this.phase === 'idle_night') logicalHours = 22.5 + (this._animTime * 0.002);
+        else if (this.phase === 'day_to_night') logicalHours = MathUtils.lerp(14.5, 22.5, rawP);
+        else if (this.phase === 'night_to_next_day') logicalHours = MathUtils.lerp(3.5, 9.5, rawP);
+
+        const transitionActivity = this.transition ? Math.sin(rawP * Math.PI) : 0;
+
+        this.scene.render(this.channels, this._animTime, transitionActivity, this.isReducedMotion(), logicalHours);
+
+        const stretchX = 1.0 + Math.min(0.028, Math.abs(this.lensVelocity) * 0.026);
+        this.renderer.render({
+          lensProgress: this.lensProgress,
+          stretchX,
+          velocity: this.lensVelocity,
+          channels: this.channels
+        });
+
+        this.onTelemetry({
+          theme: this.theme,
+          phase: this.phase,
+          lensProgress: this.lensProgress,
+          logicalClock: this.lighting.formatLogicalClock(this.phase, rawP),
+          frameTimeMs: this._frameTimeMs,
+          renderMode: this.renderer.mode,
+          channels: this.channels
+        });
+
+        if (this.onAfterRender) {
+          this.onAfterRender(this);
+        }
+      }
+
+      destroy() {
+        if (this._rafId) cancelAnimationFrame(this._rafId);
+        this.buttonEl.removeEventListener('keydown', this._onKeyDown);
+        this.buttonEl.removeEventListener('pointerdown', this._onPointerDown);
+        this.buttonEl.removeEventListener('pointermove', this._onPointerMove);
+        this.buttonEl.removeEventListener('pointerup', this._onPointerUp);
+        this.buttonEl.removeEventListener('pointercancel', this._onPointerCancel);
+        window.removeEventListener('resize', this._onResize);
+        document.removeEventListener('visibilitychange', this._onVisibility);
+        if (this._resizeObserver) this._resizeObserver.disconnect();
+        this.renderer.dispose();
+      }
+    }
+
+    /* =========================================================================
+       8. AUTOMATED QA & INVARIANT TEST SUITE
+       ========================================================================= */
+    function runQATests(toggle, themeCtrl) {
+      const results = [];
+      const savedTheme = toggle.theme;
+      const savedReduced = toggle.reducedMotionSetting;
+      const savedDisabled = toggle.disabled;
+
+      const check = (name, pass, detail) => results.push({ name, pass: Boolean(pass), detail });
+
+      try {
+        const midSunset = toggle.lighting.evaluateDayToNight(0.45);
+        const midSunrise = toggle.lighting.evaluateNightToNextDay(0.45);
+        check(
+          'Distinct Sunset vs Sunrise Timelines',
+          midSunset.sunsetWarmth > 0.6 && midSunset.sunriseWarmth === 0 &&
+          midSunrise.sunriseWarmth > 0.6 && midSunrise.sunsetWarmth === 0,
+          `sunset=${midSunset.sunsetWarmth.toFixed(2)}, sunrise=${midSunrise.sunriseWarmth.toFixed(2)}`
+        );
+
+        const nightCh = toggle.lighting.getRestingChannels('dark');
+        check(
+          'Night Lighting Channel Contrast',
+          nightCh.ambientDaylight < 0.15 && nightCh.deskLampEmission === 1.0 && nightCh.cityWindowEmission >= 0.8,
+          `day=${nightCh.ambientDaylight}, lamp=${nightCh.deskLampEmission}, city=${nightCh.cityWindowEmission}`
+        );
+
+        toggle.reducedMotionSetting = true;
+        toggle.transitionTo('dark', true);
+        const darkDomOk = document.documentElement.getAttribute('data-theme') === 'dark'
+          && toggle.buttonEl.getAttribute('aria-checked') === 'true'
+          && toggle.lensProgress === 1.0;
+        check('Light -> Dark + DOM/ARIA Sync', darkDomOk, `theme=${themeCtrl.theme}, lens=${toggle.lensProgress}`);
+
+        toggle.transitionTo('light', true);
+        const lightDomOk = document.documentElement.getAttribute('data-theme') === 'light'
+          && toggle.buttonEl.getAttribute('aria-checked') === 'false'
+          && toggle.lensProgress === 0.0;
+        check('Dark -> Light + DOM/ARIA Sync', lightDomOk, `theme=${themeCtrl.theme}, lens=${toggle.lensProgress}`);
+
+        toggle.reducedMotionSetting = false;
+        toggle.transitionTo('dark', true);
+        toggle.transitionTo('light', true);
+        toggle.transitionTo('dark', true);
+        check(
+          'Rapid Toggle Authoritative State',
+          toggle.theme === 'dark' && toggle.transition && toggle.transition.targetTheme === 'dark',
+          `finalTarget=${toggle.theme}, activeTimelines=1`
+        );
+
+        toggle.scrubLens(1.4, 'day_to_night');
+        const hiOk = toggle.lensProgress === 1.0;
+        toggle.scrubLens(-0.5, 'night_to_next_day');
+        const loOk = toggle.lensProgress === 0.0;
+        check('Lens Boundary Clamping [0..1]', hiOk && loOk, `clamped=${hiOk && loOk}`);
+
+        toggle.setDisabled(true);
+        const before = toggle.theme;
+        toggle.toggle();
+        check('Disabled State Guard', toggle.theme === before, `unchanged=${toggle.theme === before}`);
+      } finally {
+        toggle.setDisabled(savedDisabled);
+        toggle.reducedMotionSetting = true;
+        toggle.transitionTo(savedTheme, true);
+        toggle.reducedMotionSetting = savedReduced;
+      }
+
+      return results;
+    }
+
+    /* =========================================================================
+       9. 9:16 VERTICAL VIDEO STUDIO & CHOREOGRAPHY RECORDER (720x1280 @ 60fps)
+       ========================================================================= */
+    class VideoStudio9x16 {
+      constructor(toggleInstance, audioEngine) {
+        this.toggle = toggleInstance;
+        this.audio = audioEngine;
+        this.modal = document.getElementById('videoStudioModal');
+        this.exportCanvas = document.getElementById('videoExportCanvas');
+        this.ctx = this.exportCanvas.getContext('2d');
+        this.videoEl = document.getElementById('recordedVideoPreview');
+        this.recBadge = document.getElementById('recBadge');
+        this.recTimerText = document.getElementById('recTimerText');
+        this.progressBar = document.getElementById('videoProgressBar');
+        this.statusMsg = document.getElementById('videoStatusMsg');
+        this.downloadRow = document.getElementById('downloadRow');
+        this.downloadLink = document.getElementById('downloadVideoLink');
+        this.autoBtn = document.getElementById('startAutoVideoBtn');
+        this.manualBtn = document.getElementById('manualRecBtn');
+
+        this.isOpen = false;
+        this.isRecording = false;
+        this.isAutoPlaying = false;
+        this.mediaRecorder = null;
+        this.chunks = [];
+        this.recordedUrl = null;
+        this.recStartTime = 0;
+        this.autoDuration = 10000;
+        this.autoStepFlags = {};
+
+        this.cursor = { visible: false, x: 360, y: 780, pressed: false, ripple: 0 };
+
+        this._bindUI();
+      }
+
+      _bindUI() {
+        document.getElementById('videoStudioBtn').addEventListener('click', () => this.open());
+        document.getElementById('closeVideoModalBtn').addEventListener('click', () => this.close());
+        this.autoBtn.addEventListener('click', () => this.startAutoChoreography());
+        this.manualBtn.addEventListener('click', () => this.toggleManualRecording());
+        document.getElementById('resetVideoPreviewBtn').addEventListener('click', () => this._showLivePreview());
+
+        let draggingPreview = false;
+        this.exportCanvas.addEventListener('pointerdown', (e) => {
+          if (this.isAutoPlaying) return;
+          if (this.audio) this.audio.playClick(true);
+          draggingPreview = true;
+          this.exportCanvas.setPointerCapture(e.pointerId);
+          this._handlePreviewPointer(e, true);
+        });
+        this.exportCanvas.addEventListener('pointermove', (e) => {
+          if (!draggingPreview || this.isAutoPlaying) return;
+          this._handlePreviewPointer(e, false);
+        });
+        const endPreviewDrag = () => {
+          if (!draggingPreview) return;
+          draggingPreview = false;
+          this.cursor.pressed = false;
+          if (this.audio) this.audio.playClick(false);
+          const target = this.toggle.lensProgress >= 0.5 ? 'dark' : 'light';
+          this.toggle.transitionTo(target, true);
+        };
+        this.exportCanvas.addEventListener('pointerup', endPreviewDrag);
+        this.exportCanvas.addEventListener('pointercancel', endPreviewDrag);
+      }
+
+      _handlePreviewPointer(e, isDown) {
+        const rect = this.exportCanvas.getBoundingClientRect();
+        const nx = (e.clientX - rect.left) / rect.width;
+        const ny = (e.clientY - rect.top) / rect.height;
+        this.cursor.visible = true;
+        this.cursor.x = nx * 720;
+        this.cursor.y = ny * 1280;
+        this.cursor.pressed = true;
+        if (isDown) this.cursor.ripple = 1;
+
+        const progress = MathUtils.clamp((this.cursor.x - 160) / 400, 0, 1);
+        const dir = this.toggle.theme === 'light' ? 'day_to_night' : 'night_to_next_day';
+        this.toggle.scrubLens(progress, dir);
+      }
+
+      open() {
+        this.isOpen = true;
+        this.modal.classList.remove('hidden');
+        this._showLivePreview();
+      }
+
+      close() {
+        if (this.isRecording) this.stopRecording();
+        this.isAutoPlaying = false;
+        this.isOpen = false;
+        this.cursor.visible = false;
+        this.modal.classList.add('hidden');
+      }
+
+      _showLivePreview() {
+        this.videoEl.pause();
+        this.videoEl.classList.add('hidden');
+        this.downloadRow.classList.add('hidden');
+        this.progressBar.style.width = '0%';
+        this.statusMsg.textContent = 'Nhấn "Quay tự động (10s)" để tạo video dọc nghịch nút hoàn chỉnh.';
+      }
+
+      _pickMimeType() {
+        const candidates = [
+          { mime: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', ext: 'mp4' },
+          { mime: 'video/mp4', ext: 'mp4' },
+          { mime: 'video/webm;codecs=vp9,opus', ext: 'webm' },
+          { mime: 'video/webm;codecs=vp8,opus', ext: 'webm' },
+          { mime: 'video/webm', ext: 'webm' }
+        ];
+        if (typeof MediaRecorder === 'undefined') return null;
+        for (const c of candidates) {
+          if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c.mime)) {
+            return c;
+          }
+        }
+        return { mime: '', ext: 'webm' };
+      }
+
+      _startMediaRecorder() {
+        const picked = this._pickMimeType();
+        if (!picked || !this.exportCanvas.captureStream) {
+          this.statusMsg.textContent = 'Trình duyệt hiện tại không hỗ trợ MediaRecorder API.';
+          return false;
+        }
+
+        try {
+          const videoStream = this.exportCanvas.captureStream(60);
+          const tracks = [...videoStream.getVideoTracks()];
+
+          // Mux real-time synthesized Web Audio stream directly into the exported video
+          if (this.audio && this.audio.enabled) {
+            const audioStream = this.audio.getMediaStream();
+            if (audioStream) {
+              tracks.push(...audioStream.getAudioTracks());
+            }
+          }
+
+          const combinedStream = new MediaStream(tracks);
+          const opts = picked.mime ? { mimeType: picked.mime, videoBitsPerSecond: 6500000 } : { videoBitsPerSecond: 6500000 };
+          this.mediaRecorder = new MediaRecorder(combinedStream, opts);
+          this.chunks = [];
+          this.fileExt = picked.ext;
+
+          this.mediaRecorder.ondataavailable = (ev) => {
+            if (ev.data && ev.data.size > 0) this.chunks.push(ev.data);
+          };
+
+          this.mediaRecorder.onstop = () => {
+            const blob = new Blob(this.chunks, { type: picked.mime || 'video/webm' });
+            if (this.recordedUrl) URL.revokeObjectURL(this.recordedUrl);
+            this.recordedUrl = URL.createObjectURL(blob);
+
+            this.videoEl.src = this.recordedUrl;
+            this.videoEl.classList.remove('hidden');
+            this.videoEl.play().catch(() => {});
+
+            this.downloadLink.href = this.recordedUrl;
+            this.downloadLink.download = `pixel-liquid-glass-9x16.${this.fileExt}`;
+            this.downloadRow.classList.remove('hidden');
+            this.statusMsg.textContent = `Đã xuất video 9:16 (.${this.fileExt}) có âm thanh! Xem trước hoặc tải về.`;
+          };
+
+          this.mediaRecorder.start(100);
+          this.isRecording = true;
+          this.recStartTime = performance.now();
+          this.recBadge.classList.remove('hidden');
+          return true;
+        } catch (err) {
+          this.statusMsg.textContent = 'Không thể khởi động trình ghi hình: ' + err.message;
+          return false;
+        }
+      }
+
+      stopRecording() {
+        if (!this.isRecording) return;
+        this.isRecording = false;
+        this.isAutoPlaying = false;
+        this.cursor.visible = false;
+        this.recBadge.classList.add('hidden');
+        this.autoBtn.disabled = false;
+        this.manualBtn.textContent = '● Tự nghịch & Quay';
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+          this.mediaRecorder.stop();
+        }
+      }
+
+      startAutoChoreography() {
+        if (this.isRecording) return;
+        if (this.audio) this.audio.unlock();
+        this._showLivePreview();
+
+        const prevReduced = this.toggle.reducedMotionSetting;
+        this.toggle.reducedMotionSetting = true;
+        this.toggle.transitionTo('light', true);
+        this.toggle.reducedMotionSetting = prevReduced;
+
+        this.autoStepFlags = {};
+        if (!this._startMediaRecorder()) return;
+
+        this.isAutoPlaying = true;
+        this.autoBtn.disabled = true;
+        this.statusMsg.textContent = 'Đang quay tự động cảnh nghịch nút 9:16 (10 giây)...';
+      }
+
+      toggleManualRecording() {
+        if (this.isAutoPlaying) return;
+        if (this.isRecording) {
+          this.stopRecording();
+          return;
+        }
+        if (this.audio) this.audio.unlock();
+        this._showLivePreview();
+        if (!this._startMediaRecorder()) return;
+        this.manualBtn.textContent = '■ Dừng & Xuất video';
+        this.statusMsg.textContent = 'Hãy kéo hoặc chạm trực tiếp vào khung 9:16 phía trên để nghịch nút!';
+      }
+
+      _updateChoreography(elapsedMs) {
+        const t = elapsedMs / 1000;
+        const lensMinX = 215;
+        const lensMaxX = 505;
+        const lensY = 640;
+        const curLensX = MathUtils.lerp(lensMinX, lensMaxX, this.toggle.lensProgress);
+
+        if (t < 0.9) {
+          const p = MathUtils.smoothstep(0.2, 0.9, t);
+          this.cursor.visible = t > 0.15;
+          this.cursor.x = MathUtils.lerp(360, lensMinX + 20, p);
+          this.cursor.y = MathUtils.lerp(920, lensY + 12, p);
+          this.cursor.pressed = false;
+        } else if (t < 2.6) {
+          if (!this.autoStepFlags.tapNight) {
+            this.autoStepFlags.tapNight = true;
+            this.cursor.pressed = true;
+            this.cursor.ripple = 1;
+            if (this.audio) this.audio.playClick(true);
+            this.toggle.transitionTo('dark', true);
+          }
+          if (t > 1.15) this.cursor.pressed = false;
+          const p = MathUtils.smoothstep(1.2, 2.4, t);
+          this.cursor.x = MathUtils.lerp(lensMinX + 20, lensMaxX, p);
+          this.cursor.y = MathUtils.lerp(lensY + 12, lensY + 8, p);
+        } else if (t < 3.6) {
+          this.cursor.x = lensMaxX;
+          this.cursor.y = lensY + 8;
+          this.cursor.pressed = false;
+        } else if (t < 6.4) {
+          this.cursor.pressed = true;
+          if (!this.autoStepFlags.grabRipple) {
+            this.autoStepFlags.grabRipple = true;
+            this.cursor.ripple = 1;
+            if (this.audio) this.audio.playClick(true);
+          }
+          const dragT = (t - 3.6) / 2.8;
+          let prog = 1.0;
+          if (dragT < 0.42) {
+            prog = MathUtils.lerp(1.0, 0.18, MathUtils.smoothstep(0, 0.42, dragT));
+          } else if (dragT < 0.75) {
+            prog = MathUtils.lerp(0.18, 0.72, MathUtils.smoothstep(0.42, 0.75, dragT));
+          } else {
+            prog = MathUtils.lerp(0.72, 0.15, MathUtils.smoothstep(0.75, 1.0, dragT));
+          }
+          this.toggle.scrubLens(prog, 'night_to_next_day');
+          this.cursor.x = MathUtils.lerp(lensMinX, lensMaxX, prog);
+          this.cursor.y = lensY;
+        } else if (t < 8.1) {
+          if (!this.autoStepFlags.releaseMorning) {
+            this.autoStepFlags.releaseMorning = true;
+            this.cursor.pressed = false;
+            if (this.audio) this.audio.playClick(false);
+            this.toggle.transitionTo('light', true);
+          }
+          const p = MathUtils.smoothstep(6.5, 7.8, t);
+          this.cursor.x = MathUtils.lerp(curLensX, lensMinX + 40, p);
+          this.cursor.y = MathUtils.lerp(lensY, lensY + 18, p);
+        } else if (t < 10.0) {
+          if (!this.autoStepFlags.finalTap) {
+            this.autoStepFlags.finalTap = true;
+            this.cursor.pressed = true;
+            this.cursor.ripple = 1;
+            if (this.audio) this.audio.playClick(true);
+            this.toggle.transitionTo('dark', true);
+          }
+          if (t > 8.35) this.cursor.pressed = false;
+          const p = MathUtils.smoothstep(8.4, 9.5, t);
+          this.cursor.y = MathUtils.lerp(lensY + 18, 960, p);
+          if (t > 9.5) this.cursor.visible = false;
+        } else {
+          this.stopRecording();
+        }
+      }
+
+      compositeFrame() {
+        if (!this.isOpen) return;
+
+        const now = performance.now();
+        if (this.isRecording) {
+          const elapsed = now - this.recStartTime;
+          this.recTimerText.textContent = `REC ${(elapsed / 1000).toFixed(1)}s`;
+          if (this.isAutoPlaying) {
+            this.progressBar.style.width = `${Math.min(100, (elapsed / this.autoDuration) * 100).toFixed(1)}%`;
+            this._updateChoreography(elapsed);
+          }
+        }
+
+        const ctx = this.ctx;
+        const W = 720, H = 1280;
+        const ch = this.toggle.channels;
+        const night = ch.darkness;
+
+        const bgRGB = MathUtils.lerpRGB([239, 240, 245], [12, 16, 41], night);
+        ctx.fillStyle = MathUtils.rgbStr(bgRGB);
+        ctx.fillRect(0, 0, W, H);
+
+        const ambGrad = ctx.createRadialGradient(W * 0.5, H * 0.49, 40, W * 0.5, H * 0.49, 440);
+        if (night < 0.5) {
+          ambGrad.addColorStop(0, `rgba(255,255,255,${(0.7 * (1 - night)).toFixed(3)})`);
+          ambGrad.addColorStop(1, 'rgba(255,255,255,0)');
+        } else {
+          ambGrad.addColorStop(0, `rgba(58,92,196,${(0.26 * night).toFixed(3)})`);
+          ambGrad.addColorStop(1, 'rgba(12,16,41,0)');
+        }
+        ctx.fillStyle = ambGrad;
+        ctx.fillRect(0, 0, W, H);
+
+        const capW = 636;
+        const capH = 344;
+        const capX = (W - capW) / 2;
+        const capY = (H - capH) / 2;
+        const capR = capH / 2;
+
+        ctx.save();
+        ctx.shadowColor = night > 0.5 ? 'rgba(2, 6, 22, 0.82)' : 'rgba(24, 34, 58, 0.24)';
+        ctx.shadowBlur = night > 0.5 ? 54 : 42;
+        ctx.shadowOffsetY = 26;
+        this._roundPillPath(ctx, capX, capY, capW, capH, capR);
+        ctx.fillStyle = night > 0.5 ? '#1B243D' : '#D5DCE8';
+        ctx.fill();
+        ctx.restore();
+
+        const metalGrad = ctx.createLinearGradient(0, capY, 0, capY + capH);
+        metalGrad.addColorStop(0.00, MathUtils.rgbStr(MathUtils.lerpRGB([255, 255, 255], [72, 86, 122], night)));
+        metalGrad.addColorStop(0.20, MathUtils.rgbStr(MathUtils.lerpRGB([232, 236, 244], [42, 54, 84], night)));
+        metalGrad.addColorStop(0.55, MathUtils.rgbStr(MathUtils.lerpRGB([194, 202, 218], [26, 36, 61], night)));
+        metalGrad.addColorStop(0.85, MathUtils.rgbStr(MathUtils.lerpRGB([182, 192, 208], [18, 25, 45], night)));
+        metalGrad.addColorStop(1.00, MathUtils.rgbStr(MathUtils.lerpRGB([244, 247, 252], [58, 73, 109], night)));
+
+        this._roundPillPath(ctx, capX, capY, capW, capH, capR);
+        ctx.fillStyle = metalGrad;
+        ctx.fill();
+
+        const pad1 = 12;
+        const bevX = capX + pad1, bevY = capY + pad1, bevW = capW - pad1 * 2, bevH = capH - pad1 * 2;
+        const bevGrad = ctx.createLinearGradient(0, bevY, 0, bevY + bevH);
+        bevGrad.addColorStop(0, MathUtils.rgbStr(MathUtils.lerpRGB([152, 164, 184], [12, 18, 36], night)));
+        bevGrad.addColorStop(1, MathUtils.rgbStr(MathUtils.lerpRGB([238, 242, 248], [45, 60, 97], night)));
+        this._roundPillPath(ctx, bevX, bevY, bevW, bevH, bevH / 2);
+        ctx.fillStyle = bevGrad;
+        ctx.fill();
+
+        const pad2 = 16;
+        const cavX = capX + pad2, cavY = capY + pad2, cavW = capW - pad2 * 2, cavH = capH - pad2 * 2;
+        ctx.save();
+        this._roundPillPath(ctx, cavX, cavY, cavW, cavH, cavH / 2);
+        ctx.clip();
+        ctx.drawImage(this.toggle.canvasEl, cavX, cavY, cavW, cavH);
+
+        const innerShd = ctx.createLinearGradient(0, cavY, 0, cavY + 24);
+        innerShd.addColorStop(0, `rgba(10, 16, 36, ${(0.38 + night * 0.30).toFixed(3)})`);
+        innerShd.addColorStop(1, 'rgba(10, 16, 36, 0)');
+        ctx.fillStyle = innerShd;
+        ctx.fillRect(cavX, cavY, cavW, 24);
+        ctx.restore();
+
+        ctx.save();
+        this._roundPillPath(ctx, capX + 1, capY + 1, capW - 2, capH - 2, capR - 1);
+        ctx.strokeStyle = `rgba(255,255,255,${(0.75 - night * 0.48).toFixed(3)})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+
+        const textRGB = MathUtils.lerpRGB([27, 36, 54], [233, 238, 249], night);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = MathUtils.rgbStr(textRGB, 0.42);
+        ctx.font = '600 17px Inter, sans-serif';
+        ctx.fillText('PIXEL OFFICE  ·  LIQUID GLASS', W / 2, capY - 62);
+
+        const clockStr = this.toggle.lighting.formatLogicalClock(
+          this.toggle.phase,
+          this.toggle.transition
+            ? MathUtils.clamp((now - this.toggle.transition.startTime) / this.toggle.transition.duration, 0, 1)
+            : (this.toggle.theme === 'dark' ? 1 : 0)
+        );
+        const modeLabel = night > 0.5 ? 'DARK MODE' : 'LIGHT MODE';
+        ctx.fillStyle = MathUtils.rgbStr(textRGB, 0.50);
+        ctx.font = '500 18px "JetBrains Mono", monospace';
+        ctx.fillText(`${modeLabel}   ·   ${clockStr}`, W / 2, capY + capH + 74);
+
+        if (this.cursor.visible) {
+          if (this.cursor.ripple > 0.01) {
+            this.cursor.ripple *= 0.90;
+            const ripR = 26 + (1 - this.cursor.ripple) * 44;
+            ctx.beginPath();
+            ctx.arc(this.cursor.x, this.cursor.y, ripR, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(255,255,255,${(this.cursor.ripple * 0.65).toFixed(3)})`;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+          }
+
+          const r = this.cursor.pressed ? 24 : 28;
+          ctx.beginPath();
+          ctx.arc(this.cursor.x, this.cursor.y, r, 0, Math.PI * 2);
+          ctx.fillStyle = this.cursor.pressed ? 'rgba(255,255,255,0.42)' : 'rgba(255,255,255,0.22)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+        }
+      }
+
+      _roundPillPath(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.arcTo(x + w, y, x + w, y + r, r);
+        ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+        ctx.lineTo(x + r, y + h);
+        ctx.arcTo(x, y + h, x, y + h - r, r);
+        ctx.arcTo(x, y, x + r, y, r);
+        ctx.closePath();
+      }
+    }
+
+    /* =========================================================================
+       BOOTSTRAP APPLICATION & WIRE OPTIONAL INSPECTOR UI
+       ========================================================================= */
+    window.addEventListener('DOMContentLoaded', () => {
+      const buttonEl = document.getElementById('cinematicToggle');
+      const canvasEl = document.getElementById('sceneCanvas');
+      const srStatusEl = document.getElementById('srStatus');
+
+      let toggleInstance = null;
+      const audioEngine = new RealisticAudioEngine();
+
+      const themeCtrl = new ThemeController((externalTheme) => {
+        if (toggleInstance && toggleInstance.theme !== externalTheme) {
+          toggleInstance.transitionTo(externalTheme, false);
+        }
+      });
+
+      const inspectorPanel = document.getElementById('inspectorPanel');
+      const renderModeBadge = document.getElementById('renderModeBadge');
+      const statTheme = document.getElementById('statTheme');
+      const statPhase = document.getElementById('statPhase');
+      const statLens = document.getElementById('statLens');
+      const statTime = document.getElementById('statTime');
+      const statFps = document.getElementById('statFps');
+      const channelsGrid = document.getElementById('lightingChannelsGrid');
+
+      const channelDefs = [
+        ['ambientDaylight', 'Ambient Day'],
+        ['sunsetWarmth', 'Sunset Warmth'],
+        ['sunriseWarmth', 'Sunrise Warmth'],
+        ['nightAmbient', 'Night Ambient'],
+        ['cityWindowEmission', 'City Lights'],
+        ['monitorEmission', 'Monitor Glow'],
+        ['deskLampEmission', 'Desk Lamp'],
+        ['glassReflectionIntensity', 'Glass Reflect']
+      ];
+      const channelBars = {};
+      for (const [key, label] of channelDefs) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+          <div class="flex justify-between text-[10px] mb-1">
+            <span class="opacity-70">${label}</span>
+            <span class="mono opacity-90" data-val>0.00</span>
+          </div>
+          <div class="channel-bar-track"><div class="channel-bar-fill" data-bar style="width:0%"></div></div>
+        `;
+        channelsGrid.appendChild(wrap);
+        channelBars[key] = {
+          val: wrap.querySelector('[data-val]'),
+          bar: wrap.querySelector('[data-bar]')
+        };
+      }
+
+      let lastTelemetryPaint = 0;
+
+      toggleInstance = new CinematicThemeToggle({
+        buttonEl,
+        canvasEl,
+        srStatusEl,
+        audio: audioEngine,
+        initialTheme: themeCtrl.theme,
+        animationDuration: 1400,
+        enableDrag: true,
+        reducedMotion: 'system',
+        onThemeChange: (nextTheme) => {
+          themeCtrl.setTheme(nextTheme, true);
+        },
+        onTelemetry: (data) => {
+          if (inspectorPanel.classList.contains('hidden')) return;
+          const now = performance.now();
+          if (now - lastTelemetryPaint < 50) return;
+          lastTelemetryPaint = now;
+
+          statTheme.textContent = data.theme;
+          statPhase.textContent = data.phase;
+          statLens.textContent = data.lensProgress.toFixed(3);
+          statTime.textContent = data.logicalClock;
+          statFps.textContent = `${data.frameTimeMs.toFixed(1)}ms`;
+          renderModeBadge.textContent = data.renderMode === 'webgl' ? 'WebGL Refraction' : 'Canvas2D Fallback';
+
+          for (const [key] of channelDefs) {
+            const v = MathUtils.clamp(data.channels[key] || 0, 0, 1);
+            channelBars[key].val.textContent = v.toFixed(2);
+            channelBars[key].bar.style.width = `${(v * 100).toFixed(1)}%`;
+          }
+        }
+      });
+
+      const videoStudio = new VideoStudio9x16(toggleInstance, audioEngine);
+      toggleInstance.onAfterRender = () => videoStudio.compositeFrame();
+
+      const sizeButtons = document.querySelectorAll('[data-size]');
+      sizeButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          sizeButtons.forEach((b) => b.classList.remove('active'));
+          btn.classList.add('active');
+          toggleInstance.setSize(btn.getAttribute('data-size'));
+        });
+      });
+
+      const soundBtn = document.getElementById('soundToggleBtn');
+      const soundLabel = document.getElementById('soundLabel');
+      soundBtn.addEventListener('click', () => {
+        const next = !audioEngine.enabled;
+        audioEngine.setEnabled(next);
+        if (next) audioEngine.playClick(true);
+        soundLabel.textContent = next ? 'On' : 'Off';
+        soundBtn.classList.toggle('active', next);
+      });
+
+      const rmBtn = document.getElementById('reducedMotionBtn');
+      const rmLabel = document.getElementById('reducedMotionLabel');
+      const rmStates = ['system', true, false];
+      const rmNames = ['Auto', 'Reduced', 'Full'];
+      let rmIdx = 0;
+      rmBtn.addEventListener('click', () => {
+        rmIdx = (rmIdx + 1) % rmStates.length;
+        toggleInstance.reducedMotionSetting = rmStates[rmIdx];
+        rmLabel.textContent = rmNames[rmIdx];
+      });
+
+      const inspectorBtn = document.getElementById('inspectorToggleBtn');
+      inspectorBtn.addEventListener('click', () => {
+        const hidden = inspectorPanel.classList.toggle('hidden');
+        inspectorBtn.classList.toggle('active', !hidden);
+      });
+
+      const disableBtn = document.getElementById('disableToggleBtn');
+      disableBtn.addEventListener('click', () => {
+        const next = !toggleInstance.disabled;
+        toggleInstance.setDisabled(next);
+        disableBtn.textContent = `Disabled: ${next ? 'On' : 'Off'}`;
+        disableBtn.classList.toggle('active', next);
+      });
+
+      const runTestsBtn = document.getElementById('runTestsBtn');
+      const qaResultsBox = document.getElementById('qaResultsBox');
+      runTestsBtn.addEventListener('click', () => {
+        const results = runQATests(toggleInstance, themeCtrl);
+        qaResultsBox.classList.remove('hidden');
+        qaResultsBox.innerHTML = results.map((r) => `
+          <div class="flex items-center justify-between gap-2 py-0.5">
+            <span>${r.pass ? '✅' : '❌'} ${r.name}</span>
+            <span class="opacity-65">${r.detail}</span>
+          </div>
+        `).join('');
+      });
+
+      window.addEventListener('beforeunload', () => {
+        toggleInstance.destroy();
+        themeCtrl.destroy();
+        audioEngine.destroy();
+      });
+    });
+  </script>
+</body>
+</html>
